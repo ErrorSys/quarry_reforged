@@ -1,0 +1,23 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "quarry_reforged:block/quarry_frame",
+    "frame": "quarry_reforged:block/quarry_frame"
+  },
+  "elements": [
+    {
+      "from": [5, 5, 5],
+      "to": [11, 11, 11],
+      "faces": {
+        "east": { "texture": "#frame", "uv": [10.667, 4, 16, 8] }
+      }
+    },
+    {
+      "from": [10.999, 5, 5],
+      "to": [11, 11, 11],
+      "faces": {
+        "west": { "texture": "#frame", "uv": [10.667, 4, 16, 8] }
+      }
+    }
+  ]
+}

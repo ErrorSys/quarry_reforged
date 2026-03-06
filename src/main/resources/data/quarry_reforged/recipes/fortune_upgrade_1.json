@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " L ",
+    "LCL",
+    " L "
+  ],
+  "key": {
+    "L": {
+      "item": "minecraft:lapis_lazuli"
+    },
+    "C": {
+      "item": "techreborn:advanced_circuit"
+    }
+  },
+  "result": {
+    "item": "quarry_reforged:fortune_upgrade_1"
+  }
+}

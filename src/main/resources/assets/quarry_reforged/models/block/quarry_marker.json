@@ -1,0 +1,21 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "quarry_reforged:block/quarry_marker",
+    "marker": "quarry_reforged:block/quarry_marker"
+  },
+  "elements": [
+    {
+      "from": [7, 0, 7],
+      "to": [9, 10, 9],
+      "faces": {
+        "down": { "texture": "#marker", "uv": [2, 0, 4, 2] },
+        "up": { "texture": "#marker", "uv": [0, 0, 2, 2] },
+        "north": { "texture": "#marker", "uv": [0, 2, 2, 12] },
+        "east": { "texture": "#marker", "uv": [2, 2, 4, 12] },
+        "south": { "texture": "#marker", "uv": [4, 2, 6, 12] },
+        "west": { "texture": "#marker", "uv": [6, 2, 8, 12] }
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "quarry_reforged",
+  "version": "${version}",
+  "name": "Quarry Reforged",
+  "description": "Modern BuildCraft-style quarry addon for Tech Reborn (Fabric 1.20.1).",
+  "authors": [
+      "ErrorSys"
+  ],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.errorsys.quarry_reforged.QuarryReforged"
+    ],
+    "client": [
+      "com.errorsys.quarry_reforged.client.QuarryReforgedClient"
+    ]
+  },
+  "depends": {
+    "minecraft": "1.20.1",
+    "java": ">=17",
+    "fabricloader": ">=0.14.0",
+    "fabric-api": "*",
+    "techreborn": "*"
+  }
+}

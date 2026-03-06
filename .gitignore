@@ -1,0 +1,38 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# IntelliJ / JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VS Code
+.vscode/
+
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
+
+# Fabric / Minecraft run workspace
+run/
+logs/
+crash-reports/
+
+# Local OS files
+.DS_Store
+Thumbs.db
+
+# Runtime/temp files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Internal docs / assets
+docs/
+texture_assets/

@@ -1,0 +1,81 @@
+{
+  "multipart": [
+    {
+      "when": { "north": "false" },
+      "apply": { "model": "quarry_reforged:block/quarry_frame_center_north" }
+    },
+    {
+      "when": { "south": "false" },
+      "apply": { "model": "quarry_reforged:block/quarry_frame_center_south" }
+    },
+    {
+      "when": { "east": "false" },
+      "apply": { "model": "quarry_reforged:block/quarry_frame_center_east" }
+    },
+    {
+      "when": { "west": "false" },
+      "apply": { "model": "quarry_reforged:block/quarry_frame_center_west" }
+    },
+    {
+      "when": { "up": "false" },
+      "apply": { "model": "quarry_reforged:block/quarry_frame_center_up" }
+    },
+    {
+      "when": { "down": "false" },
+      "apply": { "model": "quarry_reforged:block/quarry_frame_center_down" }
+    },
+    {
+      "when": {
+        "north": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm"
+      }
+    },
+    {
+      "when": {
+        "south": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm",
+        "y": 180
+      }
+    },
+    {
+      "when": {
+        "east": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm",
+        "y": 90
+      }
+    },
+    {
+      "when": {
+        "west": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm",
+        "y": 270
+      }
+    },
+    {
+      "when": {
+        "up": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm",
+        "x": 270
+      }
+    },
+    {
+      "when": {
+        "down": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm",
+        "x": 90
+      }
+    }
+  ]
+}

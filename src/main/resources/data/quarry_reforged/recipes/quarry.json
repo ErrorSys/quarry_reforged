@@ -1,0 +1,28 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ICI",
+    "FMF",
+    "IPI"
+  ],
+  "key": {
+    "I": {
+      "item": "minecraft:iron_ingot"
+    },
+    "C": {
+      "item": "techreborn:electronic_circuit"
+    },
+    "F": {
+      "item": "techreborn:basic_machine_frame"
+    },
+    "M": {
+      "item": "minecraft:diamond_pickaxe"
+    },
+    "P": {
+      "item": "minecraft:piston"
+    }
+  },
+  "result": {
+    "item": "quarry_reforged:quarry"
+  }
+}

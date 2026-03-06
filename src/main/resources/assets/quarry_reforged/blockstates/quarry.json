@@ -1,0 +1,34 @@
+{
+  "variants": {
+    "active=false,facing=north": {
+      "model": "quarry_reforged:block/quarry"
+    },
+    "active=false,facing=south": {
+      "model": "quarry_reforged:block/quarry",
+      "y": 180
+    },
+    "active=false,facing=west": {
+      "model": "quarry_reforged:block/quarry",
+      "y": 270
+    },
+    "active=false,facing=east": {
+      "model": "quarry_reforged:block/quarry",
+      "y": 90
+    },
+    "active=true,facing=north": {
+      "model": "quarry_reforged:block/quarry_active"
+    },
+    "active=true,facing=south": {
+      "model": "quarry_reforged:block/quarry_active",
+      "y": 180
+    },
+    "active=true,facing=west": {
+      "model": "quarry_reforged:block/quarry_active",
+      "y": 270
+    },
+    "active=true,facing=east": {
+      "model": "quarry_reforged:block/quarry_active",
+      "y": 90
+    }
+  }
+}

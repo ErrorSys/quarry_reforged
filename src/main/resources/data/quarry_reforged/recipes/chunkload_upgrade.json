@@ -1,0 +1,22 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "EPE",
+    "ECE",
+    "EPE"
+  ],
+  "key": {
+    "E": {
+      "item": "minecraft:ender_pearl"
+    },
+    "P": {
+      "item": "minecraft:obsidian"
+    },
+    "C": {
+      "item": "techreborn:advanced_circuit"
+    }
+  },
+  "result": {
+    "item": "quarry_reforged:chunkload_upgrade"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "facing=up": { "model": "quarry_reforged:block/quarry_marker" },
+    "facing=down": { "model": "quarry_reforged:block/quarry_marker", "x": 180 },
+    "facing=north": { "model": "quarry_reforged:block/quarry_marker", "x": 90 },
+    "facing=south": { "model": "quarry_reforged:block/quarry_marker", "x": 270 },
+    "facing=west": { "model": "quarry_reforged:block/quarry_marker", "x": 90, "y": 270 },
+    "facing=east": { "model": "quarry_reforged:block/quarry_marker", "x": 90, "y": 90 }
+  }
+}

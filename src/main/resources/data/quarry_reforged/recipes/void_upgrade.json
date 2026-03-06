@@ -1,0 +1,22 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ONO",
+    "NCN",
+    "ONO"
+  ],
+  "key": {
+    "O": {
+      "item": "minecraft:obsidian"
+    },
+    "N": {
+      "item": "minecraft:netherite_ingot"
+    },
+    "C": {
+      "item": "techreborn:advanced_circuit"
+    }
+  },
+  "result": {
+    "item": "quarry_reforged:void_upgrade"
+  }
+}
