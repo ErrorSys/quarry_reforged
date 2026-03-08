@@ -1,13 +1,24 @@
 {
-  "type": "minecraft:crafting_shapeless",
-  "ingredients": [
-    {
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "GIG",
+    "CEC",
+    "GIG"
+  ],
+  "key": {
+    "G": {
+      "item": "minecraft:glowstone_dust"
+    },
+    "C": {
       "item": "quarry_reforged:fortune_upgrade_2"
     },
-    {
-      "item": "minecraft:diamond"
+    "I": {
+      "item": "techreborn:industrial_circuit"
+    },
+    "E": {
+      "item": "minecraft:emerald_block"
     }
-  ],
+  },
   "result": {
     "item": "quarry_reforged:fortune_upgrade_3"
   }

@@ -28,6 +28,7 @@ public class QuarryFrameBlock extends Block {
     public static final BooleanProperty WEST = Properties.WEST;
     public static final BooleanProperty UP = Properties.UP;
     public static final BooleanProperty DOWN = Properties.DOWN;
+    public static final BooleanProperty THROW_PREVIEW = BooleanProperty.of("throw_preview");
 
     private static final VoxelShape CORE_SHAPE = Block.createCuboidShape(5, 5, 5, 11, 11, 11);
     private static final VoxelShape NORTH_SHAPE = Block.createCuboidShape(5, 5, 0, 11, 11, 5);
@@ -51,7 +52,8 @@ public class QuarryFrameBlock extends Block {
                 .with(EAST, false)
                 .with(WEST, false)
                 .with(UP, false)
-                .with(DOWN, false));
+                .with(DOWN, false)
+                .with(THROW_PREVIEW, false));
     }
 
     @Override
@@ -70,7 +72,7 @@ public class QuarryFrameBlock extends Block {
 
     @Override
     protected void appendProperties(StateManager.Builder<Block, BlockState> builder) {
-        builder.add(NORTH, SOUTH, EAST, WEST, UP, DOWN);
+        builder.add(NORTH, SOUTH, EAST, WEST, UP, DOWN, THROW_PREVIEW);
     }
 
     @Nullable

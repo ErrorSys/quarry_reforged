@@ -26,7 +26,8 @@
     },
     {
       "when": {
-        "north": "true"
+        "north": "true",
+        "throw_preview": "false"
       },
       "apply": {
         "model": "quarry_reforged:block/quarry_frame_arm"
@@ -34,7 +35,8 @@
     },
     {
       "when": {
-        "south": "true"
+        "south": "true",
+        "throw_preview": "false"
       },
       "apply": {
         "model": "quarry_reforged:block/quarry_frame_arm",
@@ -43,7 +45,8 @@
     },
     {
       "when": {
-        "east": "true"
+        "east": "true",
+        "throw_preview": "false"
       },
       "apply": {
         "model": "quarry_reforged:block/quarry_frame_arm",
@@ -52,7 +55,8 @@
     },
     {
       "when": {
-        "west": "true"
+        "west": "true",
+        "throw_preview": "false"
       },
       "apply": {
         "model": "quarry_reforged:block/quarry_frame_arm",
@@ -61,7 +65,8 @@
     },
     {
       "when": {
-        "up": "true"
+        "up": "true",
+        "throw_preview": "false"
       },
       "apply": {
         "model": "quarry_reforged:block/quarry_frame_arm",
@@ -70,10 +75,70 @@
     },
     {
       "when": {
-        "down": "true"
+        "down": "true",
+        "throw_preview": "false"
       },
       "apply": {
         "model": "quarry_reforged:block/quarry_frame_arm",
+        "x": 90
+      }
+    },
+    {
+      "when": {
+        "north": "true",
+        "throw_preview": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm_capped"
+      }
+    },
+    {
+      "when": {
+        "south": "true",
+        "throw_preview": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm_capped",
+        "y": 180
+      }
+    },
+    {
+      "when": {
+        "east": "true",
+        "throw_preview": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm_capped",
+        "y": 90
+      }
+    },
+    {
+      "when": {
+        "west": "true",
+        "throw_preview": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm_capped",
+        "y": 270
+      }
+    },
+    {
+      "when": {
+        "up": "true",
+        "throw_preview": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm_capped",
+        "x": 270
+      }
+    },
+    {
+      "when": {
+        "down": "true",
+        "throw_preview": "true"
+      },
+      "apply": {
+        "model": "quarry_reforged:block/quarry_frame_arm_capped",
         "x": 90
       }
     }

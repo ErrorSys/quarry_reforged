@@ -15,6 +15,8 @@ import net.minecraft.util.math.Vec3d;
 public class QuarryMarkerBlockEntityRenderer implements BlockEntityRenderer<QuarryMarkerBlockEntity> {
     private static final Identifier LASER_TEXTURE = new Identifier(QuarryReforged.MOD_ID, "textures/entity/quarry/laser.png");
     private static final double PREVIEW_BEAM_WIDTH = 2.0 / 16.0;
+    private static final double PREVIEW_BEAM_END_EXTEND = 1.0 / 16.0;
+    private static final double PREVIEW_EDGE_OUTSET = 1.0 / 1024.0;
     private static final int MIN_SHADED_BLOCK_LIGHT = 10;
     private static final int MIN_SHADED_LIGHT = MIN_SHADED_BLOCK_LIGHT << 4;
 
@@ -30,35 +32,54 @@ public class QuarryMarkerBlockEntityRenderer implements BlockEntityRenderer<Quar
         BlockPos origin = be.getPos();
         int shadedLight = clampShadedLight(light);
 
-        Vec3d p000 = toLocalCenter(origin, be.getMinX(), be.getMinY(), be.getMinZ());
-        Vec3d p001 = toLocalCenter(origin, be.getMinX(), be.getMinY(), be.getMaxZ());
-        Vec3d p010 = toLocalCenter(origin, be.getMinX(), be.getMaxY(), be.getMinZ());
-        Vec3d p011 = toLocalCenter(origin, be.getMinX(), be.getMaxY(), be.getMaxZ());
-        Vec3d p100 = toLocalCenter(origin, be.getMaxX(), be.getMinY(), be.getMinZ());
-        Vec3d p101 = toLocalCenter(origin, be.getMaxX(), be.getMinY(), be.getMaxZ());
-        Vec3d p110 = toLocalCenter(origin, be.getMaxX(), be.getMaxY(), be.getMinZ());
-        Vec3d p111 = toLocalCenter(origin, be.getMaxX(), be.getMaxY(), be.getMaxZ());
+        double minX = be.getMinX() - PREVIEW_EDGE_OUTSET;
+        double minY = be.getMinY() - PREVIEW_EDGE_OUTSET;
+        double minZ = be.getMinZ() - PREVIEW_EDGE_OUTSET;
+        double maxX = be.getMaxX() + PREVIEW_EDGE_OUTSET;
+        double maxY = be.getMaxY() + PREVIEW_EDGE_OUTSET;
+        double maxZ = be.getMaxZ() + PREVIEW_EDGE_OUTSET;
+
+        Vec3d p000 = toLocalCenter(origin, minX, minY, minZ);
+        Vec3d p001 = toLocalCenter(origin, minX, minY, maxZ);
+        Vec3d p010 = toLocalCenter(origin, minX, maxY, minZ);
+        Vec3d p011 = toLocalCenter(origin, minX, maxY, maxZ);
+        Vec3d p100 = toLocalCenter(origin, maxX, minY, minZ);
+        Vec3d p101 = toLocalCenter(origin, maxX, minY, maxZ);
+        Vec3d p110 = toLocalCenter(origin, maxX, maxY, minZ);
+        Vec3d p111 = toLocalCenter(origin, maxX, maxY, maxZ);
 
         // Bottom ring.
-        beamRenderer.render(p000, p001, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p001, p101, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p101, p100, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p100, p000, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p000, p001, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p001, p101, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p101, p100, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p100, p000, matrices, vertexConsumers, shadedLight);
 
         // Top ring.
-        beamRenderer.render(p010, p011, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p011, p111, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p111, p110, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p110, p010, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p010, p011, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p011, p111, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p111, p110, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p110, p010, matrices, vertexConsumers, shadedLight);
 
         // Vertical edges.
-        beamRenderer.render(p000, p010, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p001, p011, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p100, p110, matrices, vertexConsumers, shadedLight);
-        beamRenderer.render(p101, p111, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p000, p010, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p001, p011, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p100, p110, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p101, p111, matrices, vertexConsumers, shadedLight);
     }
 
-    private Vec3d toLocalCenter(BlockPos origin, int x, int y, int z) {
+    private void renderExpandedBeam(Vec3d from, Vec3d to, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int shadedLight) {
+        Vec3d delta = to.subtract(from);
+        double length = delta.length();
+        if (length <= 1.0E-6) {
+            return;
+        }
+        Vec3d unit = delta.multiply(1.0 / length);
+        Vec3d expandedFrom = from.subtract(unit.multiply(PREVIEW_BEAM_END_EXTEND));
+        Vec3d expandedTo = to.add(unit.multiply(PREVIEW_BEAM_END_EXTEND));
+        beamRenderer.render(expandedFrom, expandedTo, matrices, vertexConsumers, shadedLight);
+    }
+
+    private Vec3d toLocalCenter(BlockPos origin, double x, double y, double z) {
         return new Vec3d(
                 x + 0.5 - origin.getX(),
                 y + 0.5 - origin.getY(),

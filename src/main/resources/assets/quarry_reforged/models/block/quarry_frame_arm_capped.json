@@ -1,0 +1,55 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "quarry_reforged:block/quarry_frame",
+    "frame": "quarry_reforged:block/quarry_frame"
+  },
+  "elements": [
+    {
+      "from": [5, 5, 0],
+      "to": [11, 11, 5],
+      "faces": {
+        "up": { "texture": "#frame", "uv": [5, 0, 11, 5] },
+        "north": { "texture": "#frame", "uv": [5, 5, 11, 11] },
+        "east": { "texture": "#frame", "uv": [11, 5, 16, 11] },
+        "west": { "texture": "#frame", "uv": [16, 5, 11, 11] },
+        "down": { "texture": "#frame", "uv": [5, 11, 11, 16] }
+      }
+    },
+    {
+      "from": [5, 5, 0],
+      "to": [11, 11, 0.001],
+      "faces": {
+        "south": { "texture": "#frame", "uv": [5, 5, 11, 11] }
+      }
+    },
+    {
+      "from": [10.999, 5, 0],
+      "to": [11, 11, 5],
+      "faces": {
+        "west": { "texture": "#frame", "uv": [16, 5, 11, 11] }
+      }
+    },
+    {
+      "from": [5, 5, 0],
+      "to": [5.001, 11, 5],
+      "faces": {
+        "east": { "texture": "#frame", "uv": [11, 5, 16, 11] }
+      }
+    },
+    {
+      "from": [5, 10.999, 0],
+      "to": [11, 11, 5],
+      "faces": {
+        "down": { "texture": "#frame", "uv": [5, 11, 11, 16] }
+      }
+    },
+    {
+      "from": [5, 5, 0],
+      "to": [11, 5.001, 5],
+      "faces": {
+        "up": { "texture": "#frame", "uv": [5, 0, 11, 5] }
+      }
+    }
+  ]
+}

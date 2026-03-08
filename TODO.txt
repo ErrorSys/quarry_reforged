@@ -1,17 +1,10 @@
-Verify gantry mining phase smooth travel
---( Test for when the quarry runs out of energy during this phase
-
-Finish drawing textures for the remaining blocks, items, and entities:
---( Gantry Arms
---( Tool Head
---( Lazer
---( Lazer Cube
---( Upgrades
---( Frame Block [Refine]
-
 Verify behavior mining block entities with inventories
-Verify chunkloading behavior
+--( Will handle in a future update
 
 Add wrenchable behavior to Quarry block (From TechReborn)
 --( Verify internal inventory is retained incl. energy
 
+FEAT: implement block placement underneath quarry frame walls.
+--( fills in voids within the walls directly below the frame as the quarry mines,
+--( allowing the quarry inside walls to be completely devoid of cavities otherwise
+--( caused by caves, ravines, etc...

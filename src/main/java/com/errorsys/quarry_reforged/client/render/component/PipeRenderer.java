@@ -10,16 +10,6 @@ import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 
 public final class PipeRenderer {
-    private static final int TEX_W = 16;
-    private static final int TEX_H = 16;
-    private static final QuarryUvPolicy.FacePixelRects UV_RECTS = new QuarryUvPolicy.FacePixelRects(
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // north
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // south
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // west
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // east
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // up
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16)    // down
-    );
 
     private final QuarryRenderMaterialPolicy materialPolicy;
     private final QuarryUvPolicy uvPolicy = new QuarryUvPolicy();
@@ -57,12 +47,12 @@ public final class PipeRenderer {
         VertexConsumer consumer = vertexConsumers.getBuffer(layer);
         Matrix4f position = matrices.peek().getPositionMatrix();
         Matrix3f normal = matrices.peek().getNormalMatrix();
-        QuarryUvPolicy.FaceUv northUv = uvPolicy.fromPixelRect(UV_RECTS.north(), TEX_W, TEX_H, pipeW, y2 - y1);
-        QuarryUvPolicy.FaceUv southUv = uvPolicy.fromPixelRect(UV_RECTS.south(), TEX_W, TEX_H, pipeW, y2 - y1);
-        QuarryUvPolicy.FaceUv westUv = uvPolicy.fromPixelRect(UV_RECTS.west(), TEX_W, TEX_H, pipeW, y2 - y1);
-        QuarryUvPolicy.FaceUv eastUv = uvPolicy.fromPixelRect(UV_RECTS.east(), TEX_W, TEX_H, pipeW, y2 - y1);
-        QuarryUvPolicy.FaceUv upUv = uvPolicy.fromPixelRect(UV_RECTS.up(), TEX_W, TEX_H, pipeW, pipeW);
-        QuarryUvPolicy.FaceUv downUv = uvPolicy.fromPixelRect(UV_RECTS.down(), TEX_W, TEX_H, pipeW, pipeW);
+        QuarryUvPolicy.FaceUv northUv = transpose(uvPolicy.fromPixelRect(QuarryComponentUvMaps.PIPE.north(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, y2 - y1, pipeW));
+        QuarryUvPolicy.FaceUv southUv = transpose(uvPolicy.fromPixelRect(QuarryComponentUvMaps.PIPE.south(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, y2 - y1, pipeW));
+        QuarryUvPolicy.FaceUv westUv = transpose(uvPolicy.fromPixelRect(QuarryComponentUvMaps.PIPE.west(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, y2 - y1, pipeW));
+        QuarryUvPolicy.FaceUv eastUv = transpose(uvPolicy.fromPixelRect(QuarryComponentUvMaps.PIPE.east(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, y2 - y1, pipeW));
+        QuarryUvPolicy.FaceUv upUv = uvPolicy.fromPixelRect(QuarryComponentUvMaps.PIPE.up(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, pipeW, pipeW);
+        QuarryUvPolicy.FaceUv downUv = uvPolicy.fromPixelRect(QuarryComponentUvMaps.PIPE.down(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, pipeW, pipeW);
 
         addFace(consumer, position, normal, x1, fy1, z1, northUv.u1(), northUv.v1(), x2, fy1, z1, northUv.u2(), northUv.v2(), x2, fy2, z1, northUv.u3(), northUv.v3(), x1, fy2, z1, northUv.u4(), northUv.v4(), 0.0f, 0.0f, -1.0f, light);
         addFace(consumer, position, normal, x2, fy1, z2, southUv.u1(), southUv.v1(), x1, fy1, z2, southUv.u2(), southUv.v2(), x1, fy2, z2, southUv.u3(), southUv.v3(), x2, fy2, z2, southUv.u4(), southUv.v4(), 0.0f, 0.0f, 1.0f, light);
@@ -94,5 +84,14 @@ public final class PipeRenderer {
                 .light(light)
                 .normal(normalMatrix, nx, ny, nz)
                 .next();
+    }
+
+    private QuarryUvPolicy.FaceUv transpose(QuarryUvPolicy.FaceUv uv) {
+        return new QuarryUvPolicy.FaceUv(
+                uv.u1(), uv.v1(),
+                uv.u1(), uv.v4(),
+                uv.u3(), uv.v4(),
+                uv.u3(), uv.v1()
+        );
     }
 }

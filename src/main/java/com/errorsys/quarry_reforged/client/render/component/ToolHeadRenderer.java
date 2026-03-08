@@ -7,16 +7,6 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Vec3d;
 
 public final class ToolHeadRenderer {
-    private static final int TEX_W = 16;
-    private static final int TEX_H = 16;
-    private static final QuarryUvPolicy.FacePixelRects UV_RECTS = new QuarryUvPolicy.FacePixelRects(
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // north
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // south
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // west
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // east
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // up
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16)    // down
-    );
 
     private final QuarryRenderPrimitives primitives;
     private final QuarryRenderMaterialPolicy materialPolicy;
@@ -50,9 +40,9 @@ public final class ToolHeadRenderer {
                 toolHeadW,
                 toolHeadH,
                 toolHeadW,
-                UV_RECTS,
-                TEX_W,
-                TEX_H
+                QuarryComponentUvMaps.TOOL_HEAD,
+                QuarryComponentUvMaps.TEX_W,
+                QuarryComponentUvMaps.TEX_H
         );
     }
 

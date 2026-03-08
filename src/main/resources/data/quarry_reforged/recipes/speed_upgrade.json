@@ -7,13 +7,13 @@
   ],
   "key": {
     "I": {
-      "item": "minecraft:iron_ingot"
+      "item": "techreborn:steel_plate"
     },
     "R": {
-      "item": "minecraft:redstone"
+      "item": "minecraft:redstone_block"
     },
     "C": {
-      "item": "techreborn:electronic_circuit"
+      "item": "techreborn:industrial_circuit"
     }
   },
   "result": {

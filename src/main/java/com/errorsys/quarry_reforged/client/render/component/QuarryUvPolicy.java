@@ -48,8 +48,12 @@ public final class QuarryUvPolicy {
         float v1 = rect.v1 / safeH;
         float uSpan = (rect.u2 - rect.u1) / safeW;
         float vSpan = (rect.v2 - rect.v1) / safeH;
-        float u2 = u1 + uSpan * (rect.tileU ? (float) uScale : 1.0f);
-        float v2 = v1 + vSpan * (rect.tileV ? (float) vScale : 1.0f);
+        // Match block-model-style UV behavior for sub-block faces:
+        // keep authored UV span intact for faces <= 1 block, and only tile when > 1 block.
+        float uTiles = rect.tileU ? Math.max(1.0f, (float) uScale) : 1.0f;
+        float vTiles = rect.tileV ? Math.max(1.0f, (float) vScale) : 1.0f;
+        float u2 = u1 + uSpan * uTiles;
+        float v2 = v1 + vSpan * vTiles;
         return new FaceUv(u1, v1, u2, v1, u2, v2, u1, v2);
     }
 

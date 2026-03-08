@@ -2,24 +2,24 @@
   "type": "minecraft:crafting_shaped",
   "pattern": [
     "ICI",
-    "FMF",
-    "IPI"
+    "MFM",
+    "PIP"
   ],
   "key": {
     "I": {
-      "item": "minecraft:iron_ingot"
+      "item": "techreborn:advanced_circuit"
     },
     "C": {
-      "item": "techreborn:electronic_circuit"
-    },
-    "F": {
-      "item": "techreborn:basic_machine_frame"
-    },
-    "M": {
       "item": "minecraft:diamond_pickaxe"
     },
+    "F": {
+      "item": "techreborn:advanced_machine_frame"
+    },
+    "M": {
+      "item": "techreborn:steel_plate"
+    },
     "P": {
-      "item": "minecraft:piston"
+      "item": "techreborn:energy_crystal"
     }
   },
   "result": {

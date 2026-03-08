@@ -20,17 +20,24 @@ public final class ChunkTickets {
 
     private static long key(BlockPos quarryPos) { return quarryPos.asLong(); }
 
-    public static void ensureTickets(ServerWorld world, BlockPos quarryPos, Object quarryInstance, BlockPos target, int radiusChunks, int ticketLevel) {
-        if (target == null) return;
-
+    public static void ensureTicketsForArea(ServerWorld world,
+                                            BlockPos quarryPos,
+                                            int minX,
+                                            int maxX,
+                                            int minZ,
+                                            int maxZ,
+                                            int ticketLevel) {
         ChunkPos qc = new ChunkPos(quarryPos);
-        ChunkPos tc = new ChunkPos(target);
+        int minChunkX = Math.floorDiv(Math.min(minX, maxX), 16);
+        int maxChunkX = Math.floorDiv(Math.max(minX, maxX), 16);
+        int minChunkZ = Math.floorDiv(Math.min(minZ, maxZ), 16);
+        int maxChunkZ = Math.floorDiv(Math.max(minZ, maxZ), 16);
 
         Set<ChunkPos> want = new HashSet<>();
         want.add(qc);
-        for (int dx = -radiusChunks; dx <= radiusChunks; dx++) {
-            for (int dz = -radiusChunks; dz <= radiusChunks; dz++) {
-                want.add(new ChunkPos(tc.x + dx, tc.z + dz));
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                want.add(new ChunkPos(cx, cz));
             }
         }
 
@@ -61,5 +68,28 @@ public final class ChunkTickets {
         for (ChunkPos cp : have) {
             world.getChunkManager().removeTicket(TICKET, cp, 2, quarryPos);
         }
+    }
+
+    public static Set<ChunkPos> snapshotActiveTickets(BlockPos quarryPos) {
+        Set<ChunkPos> have = ACTIVE.get(key(quarryPos));
+        if (have == null || have.isEmpty()) return Set.of();
+        return new HashSet<>(have);
+    }
+
+    public static Set<ChunkPos> computeAreaTicketSet(BlockPos quarryPos, int minX, int maxX, int minZ, int maxZ) {
+        ChunkPos qc = new ChunkPos(quarryPos);
+        int minChunkX = Math.floorDiv(Math.min(minX, maxX), 16);
+        int maxChunkX = Math.floorDiv(Math.max(minX, maxX), 16);
+        int minChunkZ = Math.floorDiv(Math.min(minZ, maxZ), 16);
+        int maxChunkZ = Math.floorDiv(Math.max(minZ, maxZ), 16);
+
+        Set<ChunkPos> want = new HashSet<>();
+        want.add(qc);
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                want.add(new ChunkPos(cx, cz));
+            }
+        }
+        return want;
     }
 }

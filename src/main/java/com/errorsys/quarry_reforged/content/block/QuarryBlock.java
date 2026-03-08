@@ -6,8 +6,11 @@ import net.minecraft.block.*;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.BlockEntityTicker;
 import net.minecraft.block.entity.BlockEntityType;
+import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.item.ItemPlacementContext;
+import net.minecraft.nbt.NbtCompound;
 import net.minecraft.screen.NamedScreenHandlerFactory;
 import net.minecraft.state.StateManager;
 import net.minecraft.state.property.BooleanProperty;
@@ -19,7 +22,9 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.world.WorldAccess;
 import net.minecraft.world.World;
+import reborncore.api.ToolManager;
 import org.jetbrains.annotations.Nullable;
 
 public class QuarryBlock extends BlockWithEntity {
@@ -58,6 +63,28 @@ public class QuarryBlock extends BlockWithEntity {
 
     @Override
     public ActionResult onUse(BlockState state, World world, BlockPos pos, PlayerEntity player, Hand hand, BlockHitResult hit) {
+        ItemStack held = player.getStackInHand(hand);
+        if (ToolManager.INSTANCE.canHandleTool(held)) {
+            if (world.isClient) return ActionResult.SUCCESS;
+            if (!(world.getBlockEntity(pos) instanceof QuarryBlockEntity quarry)) return ActionResult.PASS;
+            boolean wrenchPickup = player.shouldCancelInteraction() || player.isSneaking() || player.isInSneakingPose();
+            if (!ToolManager.INSTANCE.handleTool(held, pos, world, player, hit.getSide(), true)) return ActionResult.PASS;
+
+            if (wrenchPickup) {
+                ItemStack drop = new ItemStack(this.asItem());
+                NbtCompound stateNbt = quarry.createItemStateNbt();
+                if (!stateNbt.isEmpty()) {
+                    drop.getOrCreateNbt().put("blockEntity_data", stateNbt);
+                }
+                net.minecraft.util.ItemScatterer.spawn(world, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, drop);
+                world.removeBlock(pos, false);
+            } else {
+                Direction target = hit.getSide().getAxis().isHorizontal() ? hit.getSide() : state.get(FACING).rotateYClockwise();
+                world.setBlockState(pos, state.with(FACING, target), Block.NOTIFY_ALL);
+            }
+            return ActionResult.CONSUME;
+        }
+
         if (world.isClient) return ActionResult.SUCCESS;
 
         BlockEntity be = world.getBlockEntity(pos);
@@ -83,5 +110,17 @@ public class QuarryBlock extends BlockWithEntity {
     @Override
     public <T extends BlockEntity> BlockEntityTicker<T> getTicker(World world, BlockState state, BlockEntityType<T> type) {
         return world.isClient ? null : checkType(type, ModBlockEntities.QUARRY, QuarryBlockEntity::tickServer);
+    }
+
+    @Override
+    public void onPlaced(World world, BlockPos pos, BlockState state, @Nullable LivingEntity placer, ItemStack itemStack) {
+        super.onPlaced(world, pos, state, placer, itemStack);
+        if (world.isClient) return;
+        if (!itemStack.hasNbt()) return;
+        NbtCompound root = itemStack.getNbt();
+        if (root == null || !root.contains("blockEntity_data")) return;
+        BlockEntity be = world.getBlockEntity(pos);
+        if (!(be instanceof QuarryBlockEntity quarry)) return;
+        quarry.applyItemStateNbt(root.getCompound("blockEntity_data"));
     }
 }

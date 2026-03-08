@@ -1,13 +1,24 @@
 {
-  "type": "minecraft:crafting_shapeless",
-  "ingredients": [
-    {
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "GEG",
+    "LCL",
+    "GEG"
+  ],
+  "key": {
+    "L": {
+      "item": "techreborn:advanced_circuit"
+    },
+    "C": {
       "item": "quarry_reforged:fortune_upgrade_1"
     },
-    {
-      "item": "minecraft:lapis_block"
+    "E": {
+      "item": "minecraft:emerald"
+    },
+    "G": {
+      "item": "minecraft:glowstone_dust"
     }
-  ],
+  },
   "result": {
     "item": "quarry_reforged:fortune_upgrade_2"
   }

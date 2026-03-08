@@ -13,16 +13,6 @@ import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 public final class BeamRenderer {
-    private static final int TEX_W = 16;
-    private static final int TEX_H = 16;
-    private static final QuarryUvPolicy.FacePixelRects UV_RECTS = new QuarryUvPolicy.FacePixelRects(
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // north
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // south
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // west
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // east
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16),   // up
-            QuarryUvPolicy.PixelFaceRect.tiled(0, 0, 16, 16)    // down
-    );
 
     private final QuarryRenderMaterialPolicy materialPolicy;
     private final QuarryUvPolicy uvPolicy = new QuarryUvPolicy();
@@ -62,10 +52,10 @@ public final class BeamRenderer {
         VertexConsumer consumer = vertexConsumers.getBuffer(layer);
         Matrix4f position = matrices.peek().getPositionMatrix();
         Matrix3f normal = matrices.peek().getNormalMatrix();
-        QuarryUvPolicy.FaceUv northUv = uvPolicy.fromPixelRect(UV_RECTS.north(), TEX_W, TEX_H, beamWidth, length);
-        QuarryUvPolicy.FaceUv southUv = uvPolicy.fromPixelRect(UV_RECTS.south(), TEX_W, TEX_H, beamWidth, length);
-        QuarryUvPolicy.FaceUv westUv = uvPolicy.fromPixelRect(UV_RECTS.west(), TEX_W, TEX_H, beamWidth, length);
-        QuarryUvPolicy.FaceUv eastUv = uvPolicy.fromPixelRect(UV_RECTS.east(), TEX_W, TEX_H, beamWidth, length);
+        QuarryUvPolicy.FaceUv northUv = uvPolicy.fromPixelRect(QuarryComponentUvMaps.BEAM.north(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, beamWidth, length);
+        QuarryUvPolicy.FaceUv southUv = uvPolicy.fromPixelRect(QuarryComponentUvMaps.BEAM.south(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, beamWidth, length);
+        QuarryUvPolicy.FaceUv westUv = uvPolicy.fromPixelRect(QuarryComponentUvMaps.BEAM.west(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, beamWidth, length);
+        QuarryUvPolicy.FaceUv eastUv = uvPolicy.fromPixelRect(QuarryComponentUvMaps.BEAM.east(), QuarryComponentUvMaps.TEX_W, QuarryComponentUvMaps.TEX_H, beamWidth, length);
 
         addFace(consumer, position, normal, x1, y1, z1, northUv.u1(), northUv.v1(), x2, y1, z1, northUv.u2(), northUv.v2(), x2, y2, z1, northUv.u3(), northUv.v3(), x1, y2, z1, northUv.u4(), northUv.v4(), 0.0f, 0.0f, -1.0f, light);
         addFace(consumer, position, normal, x2, y1, z2, southUv.u1(), southUv.v1(), x1, y1, z2, southUv.u2(), southUv.v2(), x1, y2, z2, southUv.u3(), southUv.v3(), x2, y2, z2, southUv.u4(), southUv.v4(), 0.0f, 0.0f, 1.0f, light);

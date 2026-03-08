@@ -2,8 +2,8 @@
   "type": "minecraft:crafting_shaped",
   "pattern": [
     " R ",
-    "RIR",
-    " R "
+    " I ",
+    " S "
   ],
   "key": {
     "R": {
@@ -11,6 +11,9 @@
     },
     "I": {
       "item": "minecraft:iron_ingot"
+    },
+    "S": {
+      "item": "minecraft:stick"
     }
   },
   "result": {

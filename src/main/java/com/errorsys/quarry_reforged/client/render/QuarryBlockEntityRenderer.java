@@ -62,6 +62,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
     private static final double CUBE_HOVER_Y_MIN = 0.08;
     private static final double CUBE_HOVER_Y_MAX = 0.35;
     private static final double CUBE_TOP_MARGIN = 0.2;
+    private static final double TOP_LASER_CUBE_MIN_ABOVE_LAYER = 0.65;
     private static final CubeBehaviorMode TOP_LASER_CUBE_MODE = CubeBehaviorMode.WANDER_INNER_THIRD;
     private static final CubeBehaviorMode DEBUG_PREVIEW_CUBE_MODE = CubeBehaviorMode.STATIC;
     private static final double FRAME_THROW_ARC_SCALE = 0.12;
@@ -134,7 +135,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             case NONE -> {
                 resetContinuousGantryMotion(context);
             }
-            case DEBUG_PREVIEW -> renderDebugPreview(context, tickDelta, matrices, vertexConsumers, shadedLight);
+            case DEBUG_PREVIEW -> renderDebugPreview(context, tickDelta, matrices, vertexConsumers, shadedLight, overlay);
             case FRAME_WORK -> {
                 resetContinuousGantryMotion(context);
                 resetInterpolatedToolHead(context);
@@ -166,7 +167,12 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         toolHeadRenderer.render(headPos, matrices, vertexConsumers, shadedLight);
     }
 
-    private void renderDebugPreview(QuarryRenderContext context, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int shadedLight) {
+    private void renderDebugPreview(QuarryRenderContext context,
+                                    float tickDelta,
+                                    MatrixStack matrices,
+                                    VertexConsumerProvider vertexConsumers,
+                                    int shadedLight,
+                                    int overlay) {
         Vec3d headPos = QuarryRenderAnchors.toolHeadLocal(context, getInterpolatedToolHeadPos(context, tickDelta), TOOL_HEAD_Y_OFFSET);
         StaticGeometryCache staticCache = getStaticGeometryCache(context);
         QuarryRenderAnchors.GantrySpan gantrySpan = staticCache.gantrySpan;
@@ -177,6 +183,20 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         Vec3d cubePos = getCubeLocalPos(context, DEBUG_PREVIEW_CUBE_MODE);
         cubeRenderer.render(cubePos, matrices, vertexConsumers, shadedLight);
         beamRenderer.render(cubePos, headPos, matrices, vertexConsumers, shadedLight);
+
+        BlockState previewFrame = ModBlocks.FRAME.getDefaultState()
+                .with(QuarryFrameBlock.NORTH, true)
+                .with(QuarryFrameBlock.SOUTH, true)
+                .with(QuarryFrameBlock.EAST, true)
+                .with(QuarryFrameBlock.WEST, true)
+                .with(QuarryFrameBlock.UP, true)
+                .with(QuarryFrameBlock.DOWN, true)
+                .with(QuarryFrameBlock.THROW_PREVIEW, true);
+        BlockRenderManager blockRenderManager = MinecraftClient.getInstance().getBlockRenderManager();
+        matrices.push();
+        matrices.translate(0.0, 1.0, 0.0);
+        blockRenderManager.renderBlockAsEntity(previewFrame, matrices, vertexConsumers, shadedLight, overlay);
+        matrices.pop();
     }
 
     private void renderFrameBuildMode(QuarryRenderContext context, QuarryBlockEntity be, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int shadedLight, int overlay) {
@@ -269,7 +289,8 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
                 .with(QuarryFrameBlock.EAST, predictedConnects(be, pos, Direction.EAST))
                 .with(QuarryFrameBlock.WEST, predictedConnects(be, pos, Direction.WEST))
                 .with(QuarryFrameBlock.UP, predictedConnects(be, pos, Direction.UP))
-                .with(QuarryFrameBlock.DOWN, predictedConnects(be, pos, Direction.DOWN));
+                .with(QuarryFrameBlock.DOWN, predictedConnects(be, pos, Direction.DOWN))
+                .with(QuarryFrameBlock.THROW_PREVIEW, true);
     }
 
     private boolean predictedConnects(QuarryBlockEntity be, BlockPos originPos, Direction directionToNeighbor) {
@@ -339,6 +360,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
 
         long worldTime = context.worldTime();
         state.target = resolveCubeTarget(context, bounds, state, mode, worldTime);
+        state.target = applyTopLaserMinimumHeight(context, bounds, mode, state.target);
 
         double speedRatio = MathHelper.clamp(context.blocksPerSecond() / 40.0, 0.0, 1.0);
         double wanderBps = MathHelper.lerp(speedRatio, CUBE_MIN_WANDER_BPS, CUBE_MAX_WANDER_BPS);
@@ -376,6 +398,22 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             state.lastWaypointTick = worldTime;
         }
         return state.target;
+    }
+
+    private Vec3d applyTopLaserMinimumHeight(QuarryRenderContext context,
+                                             QuarryRenderAnchors.InnerThirdBounds bounds,
+                                             CubeBehaviorMode mode,
+                                             Vec3d proposedTarget) {
+        if (mode != TOP_LASER_CUBE_MODE) return proposedTarget;
+        BlockPos miningTarget = context.activeMiningTarget();
+        if (miningTarget == null) return proposedTarget;
+
+        // Keep cube center above the currently mined layer by at least this offset,
+        // but remain inside the precomputed render bounds.
+        double miningLayerCenterYLocal = context.toLocal(Vec3d.ofCenter(miningTarget)).y;
+        double minAllowedY = miningLayerCenterYLocal + TOP_LASER_CUBE_MIN_ABOVE_LAYER;
+        double clampedY = MathHelper.clamp(Math.max(proposedTarget.y, minAllowedY), bounds.minY(), bounds.maxY());
+        return new Vec3d(proposedTarget.x, clampedY, proposedTarget.z);
     }
 
     private Vec3d clampToBounds(QuarryRenderAnchors.InnerThirdBounds bounds, Vec3d pos) {
@@ -458,7 +496,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         state.lastTick = now;
 
         double movePerTick = Math.max(0.05, context.blocksPerSecond() / 20.0);
-        Vec3d target = resolveContinuousGantryTargetWorld(context, movePerTick, context.noPower());
+        Vec3d target = resolveContinuousGantryTargetWorld(context, movePerTick, context.forceHomeGantry());
         double maxDistance = movePerTick * deltaTicks;
         state.renderedWorld = moveToward(state.renderedWorld, target, maxDistance);
         return state.renderedWorld;
@@ -467,25 +505,15 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
     private Vec3d resolveContinuousGantryTargetWorld(QuarryRenderContext context, double movePerTick, boolean forceHome) {
         if (forceHome) return context.toolHeadOriginPos();
 
+        BlockPos active = context.activeMiningTarget();
+        if (active != null) return Vec3d.ofCenter(active);
+
         BlockPos next = context.waypointNext();
         if (next != null) {
-            Vec3d nextCenter = Vec3d.ofCenter(next);
-            BlockPos current = context.waypointCurrent();
-            if (current != null && !current.equals(next)) {
-                Vec3d currentCenter = Vec3d.ofCenter(current);
-                Vec3d dir = nextCenter.subtract(currentCenter);
-                double len = dir.length();
-                if (len > 1.0E-6) {
-                    double lead = MathHelper.clamp(movePerTick * 2.0, 0.2, 0.75);
-                    return nextCenter.add(dir.multiply(lead / len));
-                }
-            }
-            return nextCenter;
+            return Vec3d.ofCenter(next);
         }
         BlockPos current = context.waypointCurrent();
         if (current != null) return Vec3d.ofCenter(current);
-        BlockPos active = context.activeMiningTarget();
-        if (active != null) return Vec3d.ofCenter(active);
         return context.toolHeadOriginPos();
     }
 

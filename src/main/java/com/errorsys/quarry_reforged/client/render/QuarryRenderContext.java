@@ -28,6 +28,7 @@ public final class QuarryRenderContext {
     private final Vec3d toolHeadPos;
     private final Vec3d toolHeadOriginPos;
     private final boolean noPower;
+    private final boolean forceHomeGantry;
     private final boolean interpolationEnabled;
     private final double blocksPerSecond;
     private final long worldTime;
@@ -51,6 +52,7 @@ public final class QuarryRenderContext {
             Vec3d toolHeadPos,
             Vec3d toolHeadOriginPos,
             boolean noPower,
+            boolean forceHomeGantry,
             boolean interpolationEnabled,
             double blocksPerSecond,
             long worldTime
@@ -73,6 +75,7 @@ public final class QuarryRenderContext {
         this.toolHeadPos = toolHeadPos;
         this.toolHeadOriginPos = toolHeadOriginPos;
         this.noPower = noPower;
+        this.forceHomeGantry = forceHomeGantry;
         this.interpolationEnabled = interpolationEnabled;
         this.blocksPerSecond = blocksPerSecond;
         this.worldTime = worldTime;
@@ -100,6 +103,7 @@ public final class QuarryRenderContext {
                 be.getClientToolHeadPos(),
                 be.getClientToolHeadOriginPos(),
                 be.isNoPowerClient(),
+                be.shouldForceHomeGantryClient(),
                 be.isDebugInterpolationEnabledClient(),
                 be.getBlocksPerSecondClient(),
                 animationTick
@@ -124,6 +128,7 @@ public final class QuarryRenderContext {
     public Vec3d toolHeadPos() { return toolHeadPos; }
     public Vec3d toolHeadOriginPos() { return toolHeadOriginPos; }
     public boolean noPower() { return noPower; }
+    public boolean forceHomeGantry() { return forceHomeGantry; }
     public boolean interpolationEnabled() { return interpolationEnabled; }
     public double blocksPerSecond() { return blocksPerSecond; }
     public long worldTime() { return worldTime; }

@@ -1,21 +1,12 @@
 {
-  "parent": "minecraft:block/block",
+  "parent": "minecraft:block/cube",
   "textures": {
-    "particle": "quarry_reforged:block/quarry_active",
-    "block": "quarry_reforged:block/quarry_active"
-  },
-  "elements": [
-    {
-      "from": [0, 0, 0],
-      "to": [16, 16, 16],
-      "faces": {
-        "up": { "texture": "#block", "uv": [5.333, 0, 10.667, 4] },
-        "north": { "texture": "#block", "uv": [5.333, 4, 10.667, 8] },
-        "east": { "texture": "#block", "uv": [10.667, 4, 16, 8] },
-        "south": { "texture": "#block", "uv": [5.333, 8, 10.667, 12] },
-        "west": { "texture": "#block", "uv": [0, 4, 5.333, 8] },
-        "down": { "texture": "#block", "uv": [5.333, 12, 10.667, 16] }
-      }
-    }
-  ]
+    "particle": "quarry_reforged:block/quarry_front_active",
+    "up": "quarry_reforged:block/machine_side",
+    "down": "quarry_reforged:block/machine_bottom",
+    "north": "quarry_reforged:block/quarry_front_active",
+    "south": "quarry_reforged:block/quarry_back_active",
+    "east": "quarry_reforged:block/machine_side",
+    "west": "quarry_reforged:block/machine_side"
+  }
 }

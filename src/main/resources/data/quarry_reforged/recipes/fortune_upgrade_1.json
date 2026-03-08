@@ -1,9 +1,9 @@
 {
   "type": "minecraft:crafting_shaped",
   "pattern": [
-    " L ",
+    "DLG",
     "LCL",
-    " L "
+    "GLD"
   ],
   "key": {
     "L": {
@@ -11,6 +11,12 @@
     },
     "C": {
       "item": "techreborn:advanced_circuit"
+    },
+    "D": {
+      "item": "minecraft:diamond"
+    },
+    "G": {
+      "item": "minecraft:glowstone_dust"
     }
   },
   "result": {

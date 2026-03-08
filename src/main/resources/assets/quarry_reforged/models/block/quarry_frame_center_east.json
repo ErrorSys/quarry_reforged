@@ -9,14 +9,14 @@
       "from": [5, 5, 5],
       "to": [11, 11, 11],
       "faces": {
-        "east": { "texture": "#frame", "uv": [10.667, 4, 16, 8] }
+        "east": { "texture": "#frame", "uv": [5, 5, 11, 11] }
       }
     },
     {
       "from": [10.999, 5, 5],
       "to": [11, 11, 11],
       "faces": {
-        "west": { "texture": "#frame", "uv": [10.667, 4, 16, 8] }
+        "west": { "texture": "#frame", "uv": [5, 5, 11, 11] }
       }
     }
   ]

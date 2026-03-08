@@ -11,6 +11,7 @@ import com.errorsys.quarry_reforged.util.ApiRegistrations;
 import net.fabricmc.api.ModInitializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reborncore.common.blocks.BlockWrenchEventHandler;
 
 public class
 QuarryReforged implements ModInitializer {
@@ -27,6 +28,9 @@ QuarryReforged implements ModInitializer {
         ModScreenHandlers.register();
         ModNetworking.registerServer();
         ApiRegistrations.register();
+        if (!BlockWrenchEventHandler.wrenchableBlocks.contains(ModBlocks.QUARRY)) {
+            BlockWrenchEventHandler.wrenchableBlocks.add(ModBlocks.QUARRY);
+        }
         ModCommands.register();
         LOGGER.info("Quarry Reforged initialized.");
     }

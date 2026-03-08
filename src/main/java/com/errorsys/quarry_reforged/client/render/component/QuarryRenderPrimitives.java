@@ -37,6 +37,23 @@ public final class QuarryRenderPrimitives {
                                   QuarryUvPolicy.FacePixelRects facePixelRects,
                                   int textureWidth,
                                   int textureHeight) {
+        renderBoxTextured(matrices, vertexConsumers, renderLayer, light, minX, minY, minZ, sizeX, sizeY, sizeZ, facePixelRects, textureWidth, textureHeight, false);
+    }
+
+    public void renderBoxTextured(MatrixStack matrices,
+                                  VertexConsumerProvider vertexConsumers,
+                                  RenderLayer renderLayer,
+                                  int light,
+                                  double minX,
+                                  double minY,
+                                  double minZ,
+                                  double sizeX,
+                                  double sizeY,
+                                  double sizeZ,
+                                  QuarryUvPolicy.FacePixelRects facePixelRects,
+                                  int textureWidth,
+                                  int textureHeight,
+                                  boolean swapTopBottomUvAxes) {
         if (sizeX <= 0.0 || sizeY <= 0.0 || sizeZ <= 0.0) return;
 
         VertexConsumer consumer = vertexConsumers.getBuffer(renderLayer);
@@ -64,10 +81,22 @@ public final class QuarryRenderPrimitives {
                 : uvPolicy.fromPixelRect(facePixelRects.east(), textureWidth, textureHeight, sizeZ, sizeY);
         QuarryUvPolicy.FaceUv upUv = (facePixelRects == null)
                 ? uvPolicy.up(sizeX, sizeZ)
-                : uvPolicy.fromPixelRect(facePixelRects.up(), textureWidth, textureHeight, sizeX, sizeZ);
+                : uvPolicy.fromPixelRect(
+                        facePixelRects.up(),
+                        textureWidth,
+                        textureHeight,
+                        swapTopBottomUvAxes ? sizeZ : sizeX,
+                        swapTopBottomUvAxes ? sizeX : sizeZ
+                );
         QuarryUvPolicy.FaceUv downUv = (facePixelRects == null)
                 ? uvPolicy.down(sizeX, sizeZ)
-                : uvPolicy.fromPixelRect(facePixelRects.down(), textureWidth, textureHeight, sizeX, sizeZ);
+                : uvPolicy.fromPixelRect(
+                        facePixelRects.down(),
+                        textureWidth,
+                        textureHeight,
+                        swapTopBottomUvAxes ? sizeZ : sizeX,
+                        swapTopBottomUvAxes ? sizeX : sizeZ
+                );
 
         addFace(consumer, position, normal,
                 x1, y1, z1, northUv.u1(), northUv.v1(),
@@ -98,18 +127,27 @@ public final class QuarryRenderPrimitives {
                 1.0f, 0.0f, 0.0f, light);
 
         addFace(consumer, position, normal,
-                x1, y2, z1, upUv.u1(), upUv.v1(),
-                x2, y2, z1, upUv.u2(), upUv.v2(),
-                x2, y2, z2, upUv.u3(), upUv.v3(),
-                x1, y2, z2, upUv.u4(), upUv.v4(),
+                x1, y2, z1, (swapTopBottomUvAxes ? transpose(upUv).u1() : upUv.u1()), (swapTopBottomUvAxes ? transpose(upUv).v1() : upUv.v1()),
+                x2, y2, z1, (swapTopBottomUvAxes ? transpose(upUv).u2() : upUv.u2()), (swapTopBottomUvAxes ? transpose(upUv).v2() : upUv.v2()),
+                x2, y2, z2, (swapTopBottomUvAxes ? transpose(upUv).u3() : upUv.u3()), (swapTopBottomUvAxes ? transpose(upUv).v3() : upUv.v3()),
+                x1, y2, z2, (swapTopBottomUvAxes ? transpose(upUv).u4() : upUv.u4()), (swapTopBottomUvAxes ? transpose(upUv).v4() : upUv.v4()),
                 0.0f, 1.0f, 0.0f, light);
 
         addFace(consumer, position, normal,
-                x1, y1, z2, downUv.u1(), downUv.v1(),
-                x2, y1, z2, downUv.u2(), downUv.v2(),
-                x2, y1, z1, downUv.u3(), downUv.v3(),
-                x1, y1, z1, downUv.u4(), downUv.v4(),
+                x1, y1, z2, (swapTopBottomUvAxes ? transpose(downUv).u1() : downUv.u1()), (swapTopBottomUvAxes ? transpose(downUv).v1() : downUv.v1()),
+                x2, y1, z2, (swapTopBottomUvAxes ? transpose(downUv).u2() : downUv.u2()), (swapTopBottomUvAxes ? transpose(downUv).v2() : downUv.v2()),
+                x2, y1, z1, (swapTopBottomUvAxes ? transpose(downUv).u3() : downUv.u3()), (swapTopBottomUvAxes ? transpose(downUv).v3() : downUv.v3()),
+                x1, y1, z1, (swapTopBottomUvAxes ? transpose(downUv).u4() : downUv.u4()), (swapTopBottomUvAxes ? transpose(downUv).v4() : downUv.v4()),
                 0.0f, -1.0f, 0.0f, light);
+    }
+
+    private QuarryUvPolicy.FaceUv transpose(QuarryUvPolicy.FaceUv uv) {
+        return new QuarryUvPolicy.FaceUv(
+                uv.u1(), uv.v1(),
+                uv.u1(), uv.v4(),
+                uv.u3(), uv.v4(),
+                uv.u3(), uv.v1()
+        );
     }
 
     private void addFace(VertexConsumer consumer, Matrix4f position, Matrix3f normalMatrix,
