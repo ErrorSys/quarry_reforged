@@ -626,15 +626,36 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         int workDone = 0;
         while (workDone < ops) {
             WorkTarget target = getNextFrameTarget(sw);
-            if (target == null) return workDone;
+            if (target == null) {
+                if (workDone > 0) {
+                    markDirty();
+                    BlockState state = sw.getBlockState(pos);
+                    sw.updateListeners(pos, state, state, Block.NOTIFY_LISTENERS);
+                }
+                return workDone;
+            }
 
             switch (target.type()) {
                 case FRAME_PLACE, FRAME_REPAIR -> {
                     BlockState existing = sw.getBlockState(target.pos());
                     if (!existing.isOf(ModBlocks.FRAME)) {
-                        if (energy.amount < ModConfig.DATA.energyPerFrame) return workDone;
+                        if (energy.amount < ModConfig.DATA.energyPerFrame) {
+                            if (workDone > 0) {
+                                markDirty();
+                                BlockState state = sw.getBlockState(pos);
+                                sw.updateListeners(pos, state, state, Block.NOTIFY_LISTENERS);
+                            }
+                            return workDone;
+                        }
                         boolean hasFluid = !existing.getFluidState().isEmpty();
-                        if (!existing.isAir() && !hasFluid && !harvestBlock(sw, target.pos(), existing)) return workDone;
+                        if (!existing.isAir() && !hasFluid && !harvestBlock(sw, target.pos(), existing)) {
+                            if (workDone > 0) {
+                                markDirty();
+                                BlockState state = sw.getBlockState(pos);
+                                sw.updateListeners(pos, state, state, Block.NOTIFY_LISTENERS);
+                            }
+                            return workDone;
+                        }
                         sw.setBlockState(target.pos(), ModBlocks.FRAME.getDefaultState(), Block.NOTIFY_ALL);
                         energy.amount -= ModConfig.DATA.energyPerFrame;
                     }
@@ -647,6 +668,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 default -> { }
             }
             workDone++;
+        }
+        if (workDone > 0) {
+            markDirty();
+            BlockState state = sw.getBlockState(pos);
+            sw.updateListeners(pos, state, state, Block.NOTIFY_LISTENERS);
         }
         return workDone;
     }

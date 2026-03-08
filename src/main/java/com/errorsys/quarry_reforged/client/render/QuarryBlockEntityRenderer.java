@@ -19,6 +19,7 @@ import net.minecraft.client.render.block.BlockRenderManager;
 import net.minecraft.client.render.block.entity.BlockEntityRenderer;
 import net.minecraft.client.render.block.entity.BlockEntityRendererFactory;
 import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.util.Util;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
@@ -67,8 +68,9 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
     private static final CubeBehaviorMode DEBUG_PREVIEW_CUBE_MODE = CubeBehaviorMode.STATIC;
     private static final double FRAME_THROW_ARC_SCALE = 0.12;
     private static final double FRAME_THROW_MIN_ARC = 0.35;
-    private static final double FRAME_THROW_MIN_TICKS = 2.0;
+    private static final double FRAME_THROW_MIN_TICKS = 4.0;
     private static final double FRAME_THROW_MAX_TICKS = 14.0;
+    private static final long FRAME_THROW_MAX_ARRIVAL_WAIT_MS = 3000L;
     private static final int FRAME_THROW_PREVIEW_MIN_COUNT = 8;
     private static final double LASER_BEAM_PERSIST_TICKS = 8.0;
 
@@ -158,7 +160,9 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
                                   MatrixStack matrices,
                                   VertexConsumerProvider vertexConsumers,
                                   int shadedLight) {
-        Vec3d headWorld = getContinuousGantryHeadWorld(context, tickDelta);
+        Vec3d headWorld = context.forceHomeGantry()
+                ? context.toolHeadOriginPos()
+                : getInterpolatedToolHeadPos(context, tickDelta);
         Vec3d headPos = QuarryRenderAnchors.toolHeadLocal(context, headWorld, TOOL_HEAD_Y_OFFSET);
         StaticGeometryCache staticCache = getStaticGeometryCache(context);
         QuarryRenderAnchors.GantrySpan gantrySpan = staticCache.gantrySpan;
@@ -204,6 +208,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         Map<Long, FrameThrowGhost> ghosts = frameThrowGhosts.computeIfAbsent(quarryKey, k -> new HashMap<>());
         Vec3d start = getFrameThrowStartLocal();
         double worldTime = context.worldTime() + clampTickDelta(tickDelta);
+        long renderNowMs = Util.getMeasuringTimeMs();
         double placementsPerSecond = Math.max(1.0, context.blocksPerSecond());
         double placementIntervalTicks = Math.max(1.0, 20.0 / placementsPerSecond);
         int previewCount = Math.max(
@@ -228,9 +233,9 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             if (ghost == null) {
                 Vec3d end = context.toLocal(Vec3d.ofCenter(target));
                 double duration = getFrameThrowDurationTicks(context, start, end);
-                // Launch early enough that each ghost reaches target center right when placement is expected.
-                double launchTick = (worldTime + (i * placementIntervalTicks)) - duration;
-                ghost = new FrameThrowGhost(packed, start, end, launchTick, duration);
+                double scheduledLaunchTick = (worldTime + (i * placementIntervalTicks)) - duration;
+                double initialAgeTicks = MathHelper.clamp(worldTime - scheduledLaunchTick, 0.0, duration);
+                ghost = new FrameThrowGhost(packed, start, end, duration, initialAgeTicks, renderNowMs);
                 ghosts.put(packed, ghost);
             } else {
                 ghost.end = context.toLocal(Vec3d.ofCenter(target));
@@ -242,18 +247,26 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             FrameThrowGhost ghost = iterator.next();
             if (be.getWorld() != null
                     && be.getWorld().getBlockState(BlockPos.fromLong(ghost.targetPacked)).isOf(ModBlocks.FRAME)
-                    && (worldTime - ghost.launchTick) >= (ghost.durationTicks * 0.9)) {
+                    && ghost.ageTicks >= (ghost.durationTicks * 0.9)) {
                 iterator.remove();
                 continue;
             }
-            double age = worldTime - ghost.launchTick;
-            if (age > ghost.durationTicks + 0.01) {
-                iterator.remove();
-                continue;
-            }
-            if (age < 0.0) continue;
+            long deltaMs = Math.max(0L, Math.min(250L, renderNowMs - ghost.lastRenderMs));
+            ghost.lastRenderMs = renderNowMs;
+            ghost.ageTicks += deltaMs / 50.0;
 
-            double t = MathHelper.clamp(age / Math.max(1.0, ghost.durationTicks), 0.0, 1.0);
+            if (ghost.ageTicks >= ghost.durationTicks) {
+                ghost.ageTicks = ghost.durationTicks;
+                if (ghost.arrivedAtMs < 0L) {
+                    ghost.arrivedAtMs = renderNowMs;
+                } else if (renderNowMs - ghost.arrivedAtMs > FRAME_THROW_MAX_ARRIVAL_WAIT_MS) {
+                    iterator.remove();
+                    continue;
+                }
+            }
+            if (ghost.ageTicks < 0.0) continue;
+
+            double t = MathHelper.clamp(ghost.ageTicks / Math.max(1.0, ghost.durationTicks), 0.0, 1.0);
             Vec3d base = ghost.start.lerp(ghost.end, t);
             double arcHeight = Math.max(FRAME_THROW_MIN_ARC, ghost.start.distanceTo(ghost.end) * FRAME_THROW_ARC_SCALE);
             Vec3d arcPos = base.add(0.0, arcHeight * 4.0 * t * (1.0 - t), 0.0);
@@ -701,15 +714,18 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         private final long targetPacked;
         private final Vec3d start;
         private Vec3d end;
-        private final double launchTick;
         private final double durationTicks;
+        private double ageTicks;
+        private long lastRenderMs;
+        private long arrivedAtMs = -1L;
 
-        private FrameThrowGhost(long targetPacked, Vec3d start, Vec3d end, double launchTick, double durationTicks) {
+        private FrameThrowGhost(long targetPacked, Vec3d start, Vec3d end, double durationTicks, double ageTicks, long lastRenderMs) {
             this.targetPacked = targetPacked;
             this.start = start;
             this.end = end;
-            this.launchTick = launchTick;
             this.durationTicks = durationTicks;
+            this.ageTicks = ageTicks;
+            this.lastRenderMs = lastRenderMs;
         }
     }
 
