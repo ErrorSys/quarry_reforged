@@ -15,6 +15,7 @@ import net.minecraft.util.math.Vec3d;
 public class QuarryMarkerBlockEntityRenderer implements BlockEntityRenderer<QuarryMarkerBlockEntity> {
     private static final Identifier LASER_TEXTURE = new Identifier(QuarryReforged.MOD_ID, "textures/entity/quarry/laser.png");
     private static final double PREVIEW_BEAM_WIDTH = 2.0 / 16.0;
+    private static final double HELPER_BEAM_WIDTH = PREVIEW_BEAM_WIDTH - (1.0 / 1024.0);
     private static final double PREVIEW_BEAM_END_EXTEND = 1.0 / 16.0;
     private static final double PREVIEW_EDGE_OUTSET = 1.0 / 1024.0;
     private static final int MIN_SHADED_BLOCK_LIGHT = 10;
@@ -22,13 +23,23 @@ public class QuarryMarkerBlockEntityRenderer implements BlockEntityRenderer<Quar
 
     private final QuarryRenderMaterialPolicy materialPolicy = new QuarryRenderMaterialPolicy();
     private final BeamRenderer beamRenderer = new BeamRenderer(materialPolicy, LASER_TEXTURE, PREVIEW_BEAM_WIDTH);
+    private final BeamRenderer helperBeamRenderer = new BeamRenderer(materialPolicy, LASER_TEXTURE, HELPER_BEAM_WIDTH);
 
     public QuarryMarkerBlockEntityRenderer(BlockEntityRendererFactory.Context ctx) {
     }
 
     @Override
     public void render(QuarryMarkerBlockEntity be, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, int overlay) {
-        if (!be.hasPreview() || !be.isOriginMarker()) return;
+        if (be.hasPreview() && be.isOriginMarker()) {
+            renderBoxPreview(be, matrices, vertexConsumers, light);
+            return;
+        }
+        if (be.hasInvalidCardinalPreview()) {
+            renderInvalidCardinalPreview(be, matrices, vertexConsumers, light);
+        }
+    }
+
+    private void renderBoxPreview(QuarryMarkerBlockEntity be, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light) {
         BlockPos origin = be.getPos();
         int shadedLight = clampShadedLight(light);
 
@@ -65,6 +76,25 @@ public class QuarryMarkerBlockEntityRenderer implements BlockEntityRenderer<Quar
         renderExpandedBeam(p001, p011, matrices, vertexConsumers, shadedLight);
         renderExpandedBeam(p100, p110, matrices, vertexConsumers, shadedLight);
         renderExpandedBeam(p101, p111, matrices, vertexConsumers, shadedLight);
+    }
+
+    private void renderInvalidCardinalPreview(QuarryMarkerBlockEntity be, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light) {
+        int shadedLight = clampShadedLight(light);
+        double range = Math.max(1, be.getInvalidCardinalRange());
+        Vec3d center = new Vec3d(0.5, 0.5, 0.5);
+
+        renderHelperBeam(center, new Vec3d(1.0, 0.0, 0.0), range, matrices, vertexConsumers, shadedLight);
+        renderHelperBeam(center, new Vec3d(-1.0, 0.0, 0.0), range, matrices, vertexConsumers, shadedLight);
+        renderHelperBeam(center, new Vec3d(0.0, 0.0, 1.0), range, matrices, vertexConsumers, shadedLight);
+        renderHelperBeam(center, new Vec3d(0.0, 0.0, -1.0), range, matrices, vertexConsumers, shadedLight);
+        renderHelperBeam(center, new Vec3d(0.0, 1.0, 0.0), range, matrices, vertexConsumers, shadedLight);
+        renderHelperBeam(center, new Vec3d(0.0, -1.0, 0.0), range, matrices, vertexConsumers, shadedLight);
+    }
+
+    private void renderHelperBeam(Vec3d center, Vec3d direction, double range, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int shadedLight) {
+        Vec3d from = center;
+        Vec3d to = center.add(direction.multiply(range));
+        helperBeamRenderer.render(from, to, matrices, vertexConsumers, shadedLight);
     }
 
     private void renderExpandedBeam(Vec3d from, Vec3d to, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int shadedLight) {

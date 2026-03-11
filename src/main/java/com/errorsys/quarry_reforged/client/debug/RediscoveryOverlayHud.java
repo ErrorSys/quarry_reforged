@@ -50,19 +50,25 @@ public final class RediscoveryOverlayHud {
         lines.add("scanLayerY=" + snapshot.rediscoveryLayerY()
                 + " nextScanIn=" + snapshot.nextScanInTicks() + "t");
         lines.add("target=" + snapshot.activeTargetType() + " @ " + formatPos(snapshot.activeTargetPos()));
-        lines.add("render=" + snapshot.renderPhase() + " phaseHint=" + snapshot.phaseHint());
-        lines.add("gantryQ raw=" + snapshot.gantryQueueRawSize()
-                + " valid=" + snapshot.gantryQueueValidSize()
-                + " head=" + formatPos(snapshot.gantryQueueHead()));
-        lines.add("laserQ  raw=" + snapshot.laserQueueRawSize()
-                + " valid=" + snapshot.laserQueueValidSize()
-                + " head=" + formatPos(snapshot.laserQueueHead()));
+        lines.add("state=" + snapshot.machinePhase()
+                + " laser=" + snapshot.laserSubstate()
+                + " gantry=" + snapshot.gantrySubstate()
+                + " return=" + snapshot.returnPhase());
+        lines.add("render=" + snapshot.renderChannelPhase()
+                + " verticalTravel=" + snapshot.rediscoveryLaserVerticalTravelActive());
+        lines.add("caller=" + (snapshot.rediscoveryCallerActive()
+                ? (snapshot.rediscoveryCallerPhase()
+                + "/" + snapshot.rediscoveryCallerLaserSubstate()
+                + "/" + snapshot.rediscoveryCallerGantrySubstate())
+                : "none"));
+        lines.add("rediscoveryQ raw=" + snapshot.rediscoveryQueueRawSize()
+                + " valid=" + snapshot.rediscoveryQueueValidSize()
+                + " head=" + formatPos(snapshot.rediscoveryQueueHead()));
 
         for (String line : lines) {
             int w = tr.getWidth(line);
             int x = xRight - w;
-            context.fill(x - 2, y - 1, xRight + 1, y + tr.fontHeight, 0x90000000);
-            context.drawText(tr, line, x, y, 0xFFE0E0E0, true);
+            context.drawText(tr, line, x, y, 0xFFFFFFFF, true);
             y += tr.fontHeight + 2;
         }
     }
@@ -82,13 +88,18 @@ public final class RediscoveryOverlayHud {
             long nextScanInTicks,
             String activeTargetType,
             @Nullable BlockPos activeTargetPos,
-            String phaseHint,
-            String renderPhase,
-            int gantryQueueRawSize,
-            int gantryQueueValidSize,
-            @Nullable BlockPos gantryQueueHead,
-            int laserQueueRawSize,
-            int laserQueueValidSize,
-            @Nullable BlockPos laserQueueHead
+            String machinePhase,
+            String laserSubstate,
+            String gantrySubstate,
+            String returnPhase,
+            String renderChannelPhase,
+            boolean rediscoveryLaserVerticalTravelActive,
+            boolean rediscoveryCallerActive,
+            String rediscoveryCallerPhase,
+            String rediscoveryCallerLaserSubstate,
+            String rediscoveryCallerGantrySubstate,
+            int rediscoveryQueueRawSize,
+            int rediscoveryQueueValidSize,
+            @Nullable BlockPos rediscoveryQueueHead
     ) {}
 }

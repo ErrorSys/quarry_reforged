@@ -31,12 +31,14 @@ public final class QuarryMarkerPreviewService {
         if (candidate == null) {
             QuarryReforged.LOGGER.info("Marker preview failed at {}: no valid marker layout found.", clicked);
             clearPreviewAt(world, clicked);
+            setInvalidPreviewAt(world, clicked);
             return false;
         }
 
         if (intersectsAnotherPreview(world, candidate, markers)) {
             QuarryReforged.LOGGER.info("Marker preview failed at {}: candidate intersects another active preview.", clicked);
             clearPreviewAt(world, clicked);
+            setInvalidPreviewAt(world, clicked);
             return false;
         }
 
@@ -88,6 +90,11 @@ public final class QuarryMarkerPreviewService {
 
     private static void clearPreviewForMembers(ServerWorld world, List<BlockPos> members) {
         for (BlockPos member : members) clearPreviewAt(world, member);
+    }
+
+    private static void setInvalidPreviewAt(ServerWorld world, BlockPos markerPos) {
+        if (!(world.getBlockEntity(markerPos) instanceof QuarryMarkerBlockEntity markerBe)) return;
+        markerBe.setInvalidCardinalPreview(ModConfig.DATA.maxQuarrySize + 2);
     }
 
     private static void applyPreview(ServerWorld world, Candidate candidate) {
@@ -179,7 +186,8 @@ public final class QuarryMarkerPreviewService {
 
             List<BlockPos> xMarkers = new ArrayList<>();
             List<BlockPos> zMarkers = new ArrayList<>();
-            BlockPos topMarker = null;
+            List<BlockPos> topMarkers = new ArrayList<>();
+            BlockPos highestTopMarker = null;
 
             for (BlockPos marker : markers) {
                 if (marker.equals(origin)) continue;
@@ -190,13 +198,24 @@ public final class QuarryMarkerPreviewService {
                     zMarkers.add(marker);
                 }
                 if (marker.getX() == x0 && marker.getZ() == z0 && marker.getY() > y0 && marker.getY() - y0 <= maxTopDelta) {
-                    if (topMarker == null || marker.getY() > topMarker.getY()) topMarker = marker;
+                    topMarkers.add(marker);
+                    if (highestTopMarker == null || marker.getY() > highestTopMarker.getY()) highestTopMarker = marker;
                 }
             }
 
             if (xMarkers.isEmpty() || zMarkers.isEmpty()) continue;
 
-            int topY = topMarker != null ? topMarker.getY() : Math.min(y0 + 4, y0 + maxTopDelta);
+            BlockPos selectedTopMarker = null;
+            if (!topMarkers.isEmpty()) {
+                for (BlockPos topMarker : topMarkers) {
+                    if (topMarker.equals(clicked)) {
+                        selectedTopMarker = topMarker;
+                        break;
+                    }
+                }
+                if (selectedTopMarker == null) selectedTopMarker = highestTopMarker;
+            }
+            int topY = selectedTopMarker != null ? selectedTopMarker.getY() : Math.min(y0 + 4, y0 + maxTopDelta);
             if (topY - y0 < 2) continue;
 
             for (BlockPos xMarker : xMarkers) {
@@ -215,7 +234,7 @@ public final class QuarryMarkerPreviewService {
                     members.add(origin);
                     members.add(xMarker);
                     members.add(zMarker);
-                    if (topMarker != null) members.add(topMarker);
+                    if (selectedTopMarker != null) members.add(selectedTopMarker);
 
                     boolean containsClicked = false;
                     for (BlockPos member : members) {
@@ -234,7 +253,7 @@ public final class QuarryMarkerPreviewService {
         if (candidates.isEmpty()) return null;
         candidates.sort(Comparator
                 .comparingInt(Candidate::volume)
-                .thenComparingInt(c -> c.members.size()));
+                .thenComparing((Candidate c) -> c.members.size() < 4));
         return candidates.get(0);
     }
 

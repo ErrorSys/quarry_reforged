@@ -29,6 +29,8 @@ public final class ModConfig {
                 DATA = GSON.fromJson(r, Config.class);
                 if (DATA == null) DATA = new Config();
                 DATA.normalize();
+                // Persist normalized/new fields into existing config files.
+                save();
                 QuarryReforged.LOGGER.info("Loaded config {}", path.toAbsolutePath());
                 return;
             } catch (Exception e) {
@@ -71,8 +73,11 @@ public final class ModConfig {
         public int chunkloadingUpgradeRadius = 1;
         public int chunkTicketLevel = 2;
 
-        public boolean buildDescendingRing = false;
-        public int frameCrossmemberSpacing = 4;
+        public int rediscoveryScanIntervalTicks = 20;
+        public boolean autoFrameRepair = true;
+        public int frameRebuildScanInterval = 40;
+        public boolean debug = false;
+        public boolean enableStateDebugLogging = false;
 
         public void normalize() {
             maxQuarrySize = Math.max(1, maxQuarrySize);
@@ -86,7 +91,8 @@ public final class ModConfig {
             ticksPerBlock = Math.max(1, ticksPerBlock);
             chunkloadingUpgradeRadius = Math.max(0, chunkloadingUpgradeRadius);
             chunkTicketLevel = Math.max(0, chunkTicketLevel);
-            frameCrossmemberSpacing = Math.max(1, frameCrossmemberSpacing);
+            rediscoveryScanIntervalTicks = Math.max(1, rediscoveryScanIntervalTicks);
+            frameRebuildScanInterval = Math.max(1, frameRebuildScanInterval);
         }
     }
 }

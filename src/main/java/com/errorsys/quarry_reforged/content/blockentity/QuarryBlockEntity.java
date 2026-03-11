@@ -1,8 +1,10 @@
 package com.errorsys.quarry_reforged.content.blockentity;
 
+import com.errorsys.quarry_reforged.QuarryReforged;
 import com.errorsys.quarry_reforged.config.ModConfig;
 import com.errorsys.quarry_reforged.content.ModBlocks;
 import com.errorsys.quarry_reforged.content.ModItems;
+import com.errorsys.quarry_reforged.content.block.MarkerAreaResolver;
 import com.errorsys.quarry_reforged.content.block.QuarryBlock;
 import com.errorsys.quarry_reforged.content.block.QuarryMarkerPreviewService;
 import com.errorsys.quarry_reforged.event.QuarryMineCallback;
@@ -42,7 +44,6 @@ import net.minecraft.network.PacketByteBuf;
 import net.minecraft.network.listener.ClientPlayPacketListener;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.s2c.play.BlockEntityUpdateS2CPacket;
-import net.minecraft.nbt.NbtCompound;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.PropertyDelegate;
 import net.minecraft.screen.ScreenHandler;
@@ -76,6 +77,14 @@ import java.util.*;
 })
 public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHandlerFactory {
     private static final int MAX_SPEED_UPGRADES = 4;
+    private static final double REDISCOVERY_LASER_TARGET_Y_OFFSET = 0.65;
+    private static final double REDISCOVERY_LASER_WANDER_VOLUME_HALF_HEIGHT = 2.5;
+    private static final double REDISCOVERY_VOLUME_WIDTH_RATIO = 2.0 / 3.0;
+    private static final double REDISCOVERY_VOLUME_HEIGHT = 5.0;
+    private static final double REDISCOVERY_VOLUME_SHIFT_TRIGGER = 15.0;
+    private static final double GANTRY_TRAVEL_LOG_MIN_DISTANCE = 1.05;
+    private static final double GANTRY_TRAVEL_LOG_ROUNDED_MIN_DISTANCE = 1.0005;
+    private static boolean autoExportDebugLogging = false;
     private static final Set<String> INTERNAL_BLOCK_BLACKLIST = Set.of(
             "minecraft:end_portal_frame",
             "minecraft:end_portal",
@@ -99,6 +108,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     // State
     private boolean active = false;
+    private MachinePhase machinePhase = MachinePhase.NO_POWER;
+    private LaserSubstate laserSubstate = LaserSubstate.NONE;
+    private GantrySubstate gantrySubstate = GantrySubstate.NONE;
+    private MachinePhase resumePhase = MachinePhase.IDLE;
+    private LaserSubstate resumeLaserSubstate = LaserSubstate.NONE;
+    private GantrySubstate resumeGantrySubstate = GantrySubstate.NONE;
+    private boolean hasResumeState = false;
     private Mode mode = Mode.EXPORT;
     private MachineRedstoneMode redstoneMode = MachineRedstoneMode.IGNORED;
     private boolean autoExportEnabled = true;
@@ -116,6 +132,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private List<BlockPos> cachedFrame = null;
     private List<BlockPos> cachedFrameRemoval = null;
     private Set<Long> cachedFrameLookup = null;
+    private boolean initFrameBuildComplete = false;
     private final ArrayDeque<BlockPos> pendingFrameRepairs = new ArrayDeque<>();
     private boolean frameRemovalActive = false;
     private int frameRemovalIndex = -1;
@@ -135,8 +152,6 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private double miningBudget = 0.0;
     private final ArrayDeque<BlockPos> pendingRediscoveryTargets = new ArrayDeque<>();
     private final Set<Long> pendingRediscoveryTargetSet = new HashSet<>();
-    private final ArrayDeque<BlockPos> pendingInsetRediscoveryTargets = new ArrayDeque<>();
-    private final Set<Long> pendingInsetRediscoveryTargetSet = new HashSet<>();
     private int rediscoveryLayerY = Integer.MIN_VALUE;
     private long nextRediscoveryScanTick = 0L;
     private boolean drainRediscoveryQueue = false;
@@ -144,22 +159,46 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private long activeMiningTargetPacked = 0L;
     private int activeMiningTargetType = -1;
     private ReturnPhase returnPhase = ReturnPhase.NONE;
-    private boolean suppressGantryDuringReturn = false;
+    private boolean rediscoveryCallerActive = false;
+    private MachinePhase rediscoveryCallerPhase = MachinePhase.IDLE;
+    private LaserSubstate rediscoveryCallerLaserSubstate = LaserSubstate.NONE;
+    private GantrySubstate rediscoveryCallerGantrySubstate = GantrySubstate.NONE;
+    private boolean frameRepairCallerActive = false;
+    private MachinePhase frameRepairCallerPhase = MachinePhase.IDLE;
+    private LaserSubstate frameRepairCallerLaserSubstate = LaserSubstate.NONE;
+    private GantrySubstate frameRepairCallerGantrySubstate = GantrySubstate.NONE;
+    private boolean rediscoveryLaserVerticalTravelActive = false;
+    private double laserCubeTravelX = Double.NaN;
+    private double laserCubeTravelY = Double.NaN;
+    private double laserCubeTravelZ = Double.NaN;
+    private double rediscoveryServerVolumeOriginY = Double.NaN;
     private boolean finalRediscoverySweepDone = false;
-    private boolean finished = false;
+    private boolean finishEndpointTask = false;
+    private final EnumSet<FreezeReason> freezeLocks = EnumSet.noneOf(FreezeReason.class);
+    private GantrySubstate gantrySubstateBeforeFreeze = GantrySubstate.NONE;
     private StatusState statusState = StatusState.IDLE;
     private boolean insufficientEnergyForNextOp = false;
     private long requiredEnergyForNextOp = 0L;
     private String statusMessage = "";
     private int statusMessageColor = 0xFF9AA3B2;
     private long statusMessageUntilTick = -1L;
+    private boolean hasLoggedStateSnapshot = false;
+    private MachinePhase loggedMachinePhase = MachinePhase.NO_POWER;
+    private LaserSubstate loggedLaserSubstate = LaserSubstate.NONE;
+    private GantrySubstate loggedGantrySubstate = GantrySubstate.NONE;
+    private ReturnPhase loggedReturnPhase = ReturnPhase.NONE;
+    private StatusState loggedStatusState = StatusState.IDLE;
+    private RenderChannelPhase loggedRenderChannelPhase = RenderChannelPhase.RENDER_NONE;
+    private boolean loggedActive = false;
+    private boolean loggedFrameRemovalActive = false;
+    private boolean loggedInsufficientEnergyForNextOp = false;
     private boolean debugVisualPreview = false;
     @Nullable
     private RenderChannelPhase debugForcedRenderPhase = null;
     private boolean debugFreezeAnimation = false;
     private long debugFrozenAnimationTick = 0L;
     private boolean debugInterpolationEnabled = true;
-    private RenderChannelPhase renderChannelPhase = RenderChannelPhase.NONE;
+    private RenderChannelPhase renderChannelPhase = RenderChannelPhase.RENDER_NONE;
     private long renderChannelPhaseStartedTick = 0L;
     private long renderChannelStateTick = 0L;
     private long renderChannelWaypointCurrentPacked = 0L;
@@ -241,13 +280,28 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     public void onToggleRequested() {
         if (!(world instanceof ServerWorld sw)) return;
+        debugLog("ui toggle requested active={} phase={} laser={} gantry={} return={} areaLocked={} finish={}",
+                active, machinePhase, laserSubstate, gantrySubstate, returnPhase, areaLocked, finishEndpointTask);
+        if (machinePhase == MachinePhase.NO_POWER) {
+            debugLog("ui toggle rejected: no_power energy={} required={}", energy.amount, requiredEnergyForNextOp);
+            syncState();
+            return;
+        }
+        if (machinePhase == MachinePhase.FINISH || finishEndpointTask) {
+            debugLog("ui toggle rejected: finished finishEndpointTask={}", finishEndpointTask);
+            syncState();
+            return;
+        }
         if (returnPhase != ReturnPhase.NONE) {
+            debugLog("ui toggle rejected: return in progress returnPhase={}", returnPhase);
             syncState();
             return;
         }
 
         if (frameRemovalActive) {
+            debugLog("ui toggle action: cancel remove_frame");
             frameRemovalActive = false;
+            machinePhase = MachinePhase.IDLE;
             clearActiveMiningTarget();
             clearStatusMessage();
             updateStatusState(sw);
@@ -257,11 +311,14 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         if (!active && areaLocked && frameRemovalIndex >= 0) {
             if (!isRedstoneConditionMet(sw)) {
+                debugLog("ui toggle rejected: redstone gate");
                 syncState();
                 return;
             }
+            debugLog("ui toggle action: resume remove_frame");
             clearDebugVisualPreview();
             frameRemovalActive = true;
+            machinePhase = MachinePhase.REMOVE_FRAME;
             clearStatusMessage();
             updateStatusState(sw);
             syncState();
@@ -269,27 +326,28 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         }
 
         if (active) {
-            beginReturnToOrigin(sw, ReturnPhase.STOPPING);
-            finished = false;
-            clearStatusMessage();
-            syncState();
+            debugLog("ui toggle action: stop requested");
+            stopWithPhasePolicy(sw);
             return;
         }
 
         if (!isRedstoneConditionMet(sw)) {
+            debugLog("ui toggle rejected: redstone gate");
             syncState();
             return;
         }
 
-        finished = false;
+        machinePhase = (areaLocked && !initFrameBuildComplete) ? MachinePhase.BUILD_FRAME : MachinePhase.IDLE;
         if (!areaLocked) {
             boolean lockedFromMarkerPreview = lockAreaFromOriginMarkerPreview(sw);
             if (!lockedFromMarkerPreview) {
+                debugLog("ui toggle rejected: marker preview lock failed");
                 setStatusMessage("gui.quarry_reforged.scan.fail.preview_required", 0xFFE35D5D, -1L);
                 syncState();
                 return;
             }
             if (!hasClearFrameBuildPath(sw)) {
+                debugLog("ui toggle rejected: frame path blocked");
                 setStatusMessage("gui.quarry_reforged.status.message.frame_blocked", 0xFFE35D5D, -1L);
                 syncState();
                 return;
@@ -301,7 +359,54 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         clearDebugVisualPreview();
         setActive(true);
+        debugLog("ui toggle action: machine started");
         syncState();
+    }
+
+    private void stopWithPhasePolicy(ServerWorld sw) {
+        if (machinePhase == MachinePhase.GANTRY_MINE && gantrySubstate == GantrySubstate.FREEZE) {
+            debugLog("stop ignored due to freeze lock");
+            syncState();
+            return;
+        }
+
+        cacheResumeState();
+        debugLog("stop policy entered resumePhase={} resumeLaser={} resumeGantry={}", resumePhase, resumeLaserSubstate, resumeGantrySubstate);
+        machinePhase = MachinePhase.STOPPING;
+        clearStatusMessage();
+
+        switch (resumePhase) {
+            case GANTRY_MINE, FINISH -> {
+                gantrySubstate = GantrySubstate.TRAVEL;
+                debugLog("stop policy: gantry return to origin");
+                beginReturnToOrigin(sw, ReturnPhase.STOPPING);
+            }
+            case LASER_MINE -> {
+                debugLog("stop policy: laser -> idle");
+                active = false;
+                returnPhase = ReturnPhase.NONE;
+                frameWorkBudget = 0.0;
+                miningBudget = 0.0;
+                laserSubstate = LaserSubstate.LASER_MINE_IDLE;
+                gantrySubstate = GantrySubstate.NONE;
+                machinePhase = MachinePhase.IDLE;
+                updateStatusState(sw);
+                syncState();
+            }
+            case BUILD_FRAME, FRAME_REPAIR, IDLE, REMOVE_FRAME, STOPPING, NO_POWER -> {
+                debugLog("stop policy: immediate idle from {}", resumePhase);
+                active = false;
+                frameRemovalActive = false;
+                returnPhase = ReturnPhase.NONE;
+                frameWorkBudget = 0.0;
+                miningBudget = 0.0;
+                laserSubstate = LaserSubstate.NONE;
+                gantrySubstate = GantrySubstate.NONE;
+                machinePhase = MachinePhase.IDLE;
+                updateStatusState(sw);
+                syncState();
+            }
+        }
     }
 
     private BlockPos getOriginMarkerPos() {
@@ -311,27 +416,32 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     private boolean lockAreaFromOriginMarkerPreview(ServerWorld sw) {
         BlockPos originMarkerPos = getOriginMarkerPos();
-        if (!sw.getBlockState(originMarkerPos).isOf(ModBlocks.MARKER)) return false;
-        if (!(sw.getBlockEntity(originMarkerPos) instanceof QuarryMarkerBlockEntity markerBe)) return false;
-        if (!markerBe.hasPreview()) return false;
-        BlockPos markerOrigin = markerBe.getOriginPos();
-        if (markerOrigin == null || !markerOrigin.equals(originMarkerPos)) return false;
+        MarkerAreaResolver.MarkerArea area = MarkerAreaResolver.resolveFromOriginMarker(sw, originMarkerPos);
+        if (area == null) return false;
 
         lockArea(
-                markerBe.getMinX(), markerBe.getMaxX(),
-                markerBe.getMinY(), markerBe.getMaxY(),
-                markerBe.getMinZ(), markerBe.getMaxZ()
+                area.minX(), area.maxX(),
+                area.minY(), area.maxY(),
+                area.minZ(), area.maxZ()
         );
         return areaLocked;
     }
 
     public void onRemoveFrameRequested() {
         if (!(world instanceof ServerWorld sw)) return;
+        debugLog("ui remove_frame requested phase={} active={} areaLocked={} finish={}", machinePhase, active, areaLocked, finishEndpointTask);
+        if (machinePhase == MachinePhase.NO_POWER) {
+            debugLog("ui remove_frame rejected: no_power energy={} required={}", energy.amount, requiredEnergyForNextOp);
+            syncState();
+            return;
+        }
         if (!isRedstoneConditionMet(sw)) {
+            debugLog("ui remove_frame rejected: redstone gate");
             syncState();
             return;
         }
         if (!canStartFrameRemoval(sw)) {
+            debugLog("ui remove_frame rejected: canStartFrameRemoval=false");
             syncState();
             return;
         }
@@ -341,36 +451,46 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         frameRemovalIndex = 0;
         clearDebugVisualPreview();
         frameRemovalActive = true;
+        machinePhase = MachinePhase.REMOVE_FRAME;
         active = false;
         frameWorkBudget = 0.0;
         miningBudget = Math.min(miningBudget, 1.0);
         clearActiveMiningTarget();
         clearStatusMessage();
         updateStatusState(sw);
+        debugLog("ui remove_frame accepted");
         syncState();
     }
 
     public void onCycleRedstoneRequested() {
         if (!(world instanceof ServerWorld sw)) return;
+        debugLog("ui cycle redstone requested current={}", redstoneMode);
         cycleRedstoneMode();
         updateStatusState(sw);
+        debugLog("ui cycle redstone applied new={}", redstoneMode);
         syncState();
     }
 
     public void onToggleAutoExportRequested() {
         if (!(world instanceof ServerWorld)) return;
+        debugLog("ui toggle auto export requested current={}", autoExportEnabled);
         toggleAutoExportEnabled();
+        debugLog("ui toggle auto export applied new={}", autoExportEnabled);
         syncState();
     }
 
     public void onCycleSideModeRequested(ItemIoGroup group, MachineRelativeSide side) {
         if (!(world instanceof ServerWorld)) return;
+        debugLog("ui cycle side mode requested group={} side={} current={}", group, side, getSideMode(group, side));
         cycleSideMode(group, side);
+        debugLog("ui cycle side mode applied group={} side={} new={}", group, side, getSideMode(group, side));
         syncState();
     }
 
     public void setActive(boolean v) {
         if (this.active == v) return;
+        if (v && (machinePhase == MachinePhase.FINISH || finishEndpointTask)) return;
+        debugLog("setActive {} -> {} phase={} laser={} gantry={} return={}", this.active, v, machinePhase, laserSubstate, gantrySubstate, returnPhase);
         this.active = v;
 
         if (world instanceof ServerWorld sw) {
@@ -386,7 +506,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 frameRemovalIndex = -1;
                 clearRediscoveryState();
                 clearMiningTravelState();
+                clearFreezeLocks();
                 ChunkTickets.clearTickets(sw, pos, this);
+                if (machinePhase != MachinePhase.NO_POWER && machinePhase != MachinePhase.FINISH) {
+                    machinePhase = MachinePhase.IDLE;
+                    laserSubstate = LaserSubstate.NONE;
+                    gantrySubstate = GantrySubstate.NONE;
+                }
             } else {
                 clearDebugVisualPreview();
                 if (areaLocked) {
@@ -396,14 +522,337 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                         syncState();
                         return;
                     }
-                    ensureFrameIntegrity(sw, true);
+                    if (initFrameBuildComplete) {
+                        ensureFrameIntegrity(sw, true);
+                    }
                     ensureMiningInit(sw);
+                    if (!initFrameBuildComplete) {
+                        machinePhase = MachinePhase.BUILD_FRAME;
+                        laserSubstate = LaserSubstate.NONE;
+                        gantrySubstate = GantrySubstate.NONE;
+                    } else if (active && layerY != Integer.MIN_VALUE) {
+                        primeMiningPhaseFromFirstTarget(sw);
+                    }
                 }
             }
             updateStatusState(sw);
             markDirty();
             sw.updateListeners(pos, bs, bs, Block.NOTIFY_ALL);
         }
+    }
+
+    private void cacheResumeState() {
+        resumePhase = machinePhase;
+        resumeLaserSubstate = laserSubstate;
+        resumeGantrySubstate = gantrySubstate;
+        hasResumeState = true;
+    }
+
+    private void clearResumeState() {
+        hasResumeState = false;
+        resumePhase = MachinePhase.IDLE;
+        resumeLaserSubstate = LaserSubstate.NONE;
+        resumeGantrySubstate = GantrySubstate.NONE;
+    }
+
+    private boolean isStateDebugLoggingEnabled() {
+        return ModConfig.DATA.enableStateDebugLogging;
+    }
+
+    private void debugLog(String format, Object... args) {
+        if (!isStateDebugLoggingEnabled()) return;
+        long tick = world == null ? -1L : world.getTime();
+        String rediscoveryId = pos.toShortString() + "@" + tick;
+        String prefix = "[quarry-state {} @ {} rid={}] ";
+        Object[] withContext = new Object[args.length + 3];
+        withContext[0] = pos;
+        withContext[1] = world == null ? "no_world" : world.getRegistryKey().getValue();
+        withContext[2] = rediscoveryId;
+        System.arraycopy(args, 0, withContext, 3, args.length);
+        QuarryReforged.LOGGER.info(prefix + format, withContext);
+    }
+
+    private void debugLogStateSnapshotChanges() {
+        if (!isStateDebugLoggingEnabled()) return;
+        if (!hasLoggedStateSnapshot) {
+            hasLoggedStateSnapshot = true;
+            loggedMachinePhase = machinePhase;
+            loggedLaserSubstate = laserSubstate;
+            loggedGantrySubstate = gantrySubstate;
+            loggedReturnPhase = returnPhase;
+            loggedStatusState = statusState;
+            loggedRenderChannelPhase = renderChannelPhase;
+            loggedActive = active;
+            loggedFrameRemovalActive = frameRemovalActive;
+            loggedInsufficientEnergyForNextOp = insufficientEnergyForNextOp;
+            debugLog("snapshot init phase={} laser={} gantry={} return={} status={} render={} active={} frameRemoval={} energy={}/{} required={} insufficient={}",
+                    machinePhase, laserSubstate, gantrySubstate, returnPhase, statusState, renderChannelPhase,
+                    active, frameRemovalActive, energy.amount, energy.getCapacity(), requiredEnergyForNextOp, insufficientEnergyForNextOp);
+            return;
+        }
+
+        if (loggedMachinePhase != machinePhase
+                || loggedLaserSubstate != laserSubstate
+                || loggedGantrySubstate != gantrySubstate
+                || loggedReturnPhase != returnPhase
+                || loggedStatusState != statusState
+                || loggedRenderChannelPhase != renderChannelPhase
+                || loggedActive != active
+                || loggedFrameRemovalActive != frameRemovalActive
+                || loggedInsufficientEnergyForNextOp != insufficientEnergyForNextOp) {
+            boolean shortGantrySnapshotToggle = loggedMachinePhase == machinePhase
+                    && machinePhase == MachinePhase.GANTRY_MINE
+                    && loggedLaserSubstate == laserSubstate
+                    && loggedReturnPhase == returnPhase
+                    && loggedStatusState == statusState
+                    && loggedActive == active
+                    && loggedFrameRemovalActive == frameRemovalActive
+                    && loggedInsufficientEnergyForNextOp == insufficientEnergyForNextOp
+                    && ((loggedGantrySubstate == GantrySubstate.MINE && gantrySubstate == GantrySubstate.TRAVEL)
+                    || (loggedGantrySubstate == GantrySubstate.TRAVEL && gantrySubstate == GantrySubstate.MINE))
+                    && ((loggedRenderChannelPhase == RenderChannelPhase.RENDER_GANTRY_MINE && renderChannelPhase == RenderChannelPhase.RENDER_GANTRY_TRAVEL)
+                    || (loggedRenderChannelPhase == RenderChannelPhase.RENDER_GANTRY_TRAVEL && renderChannelPhase == RenderChannelPhase.RENDER_GANTRY_MINE));
+            if (!shortGantrySnapshotToggle) {
+                debugLog("snapshot change phase:{}->{} laser:{}->{} gantry:{}->{} return:{}->{} status:{}->{} render:{}->{} active:{}->{} frameRemoval:{}->{} insufficient:{}->{} energy={}/{} required={}",
+                        loggedMachinePhase, machinePhase,
+                        loggedLaserSubstate, laserSubstate,
+                        loggedGantrySubstate, gantrySubstate,
+                        loggedReturnPhase, returnPhase,
+                        loggedStatusState, statusState,
+                        loggedRenderChannelPhase, renderChannelPhase,
+                        loggedActive, active,
+                        loggedFrameRemovalActive, frameRemovalActive,
+                        loggedInsufficientEnergyForNextOp, insufficientEnergyForNextOp,
+                        energy.amount, energy.getCapacity(), requiredEnergyForNextOp);
+            }
+
+            loggedMachinePhase = machinePhase;
+            loggedLaserSubstate = laserSubstate;
+            loggedGantrySubstate = gantrySubstate;
+            loggedReturnPhase = returnPhase;
+            loggedStatusState = statusState;
+            loggedRenderChannelPhase = renderChannelPhase;
+            loggedActive = active;
+            loggedFrameRemovalActive = frameRemovalActive;
+            loggedInsufficientEnergyForNextOp = insufficientEnergyForNextOp;
+        }
+    }
+
+    private void captureRediscoveryCallerIfNeeded(MachinePhase phase, LaserSubstate laser, GantrySubstate gantry) {
+        if (rediscoveryCallerActive) return;
+        rediscoveryCallerActive = true;
+        rediscoveryCallerPhase = phase;
+        rediscoveryCallerLaserSubstate = laser;
+        rediscoveryCallerGantrySubstate = gantry;
+    }
+
+    private void restoreRediscoveryCallerIfPresent() {
+        if (!rediscoveryCallerActive) return;
+        machinePhase = rediscoveryCallerPhase;
+        laserSubstate = rediscoveryCallerLaserSubstate;
+        gantrySubstate = rediscoveryCallerGantrySubstate;
+        rediscoveryCallerActive = false;
+        rediscoveryCallerPhase = MachinePhase.IDLE;
+        rediscoveryCallerLaserSubstate = LaserSubstate.NONE;
+        rediscoveryCallerGantrySubstate = GantrySubstate.NONE;
+    }
+
+    private void captureFrameRepairCallerIfNeeded(MachinePhase phase, LaserSubstate laser, GantrySubstate gantry) {
+        if (frameRepairCallerActive) return;
+        frameRepairCallerActive = true;
+        frameRepairCallerPhase = phase;
+        frameRepairCallerLaserSubstate = laser;
+        frameRepairCallerGantrySubstate = gantry;
+    }
+
+    private void restoreFrameRepairCallerIfPresent() {
+        if (!frameRepairCallerActive) return;
+        machinePhase = frameRepairCallerPhase;
+        laserSubstate = frameRepairCallerLaserSubstate;
+        gantrySubstate = frameRepairCallerGantrySubstate;
+        frameRepairCallerActive = false;
+        frameRepairCallerPhase = MachinePhase.IDLE;
+        frameRepairCallerLaserSubstate = LaserSubstate.NONE;
+        frameRepairCallerGantrySubstate = GantrySubstate.NONE;
+    }
+
+    private int freezeReasonPriority(FreezeReason reason) {
+        return switch (reason) {
+            case NO_POWER -> 3;
+            case FRAME_REPAIR -> 2;
+            case REDISCOVERY -> 1;
+        };
+    }
+
+    @Nullable
+    private FreezeReason getHighestFreezeReason() {
+        FreezeReason top = null;
+        int topPriority = Integer.MIN_VALUE;
+        for (FreezeReason reason : freezeLocks) {
+            int priority = freezeReasonPriority(reason);
+            if (top == null || priority > topPriority) {
+                top = reason;
+                topPriority = priority;
+            }
+        }
+        return top;
+    }
+
+    private void requestFreeze(FreezeReason reason) {
+        freezeLocks.add(reason);
+        if (finishEndpointTask && reason != FreezeReason.NO_POWER) return;
+        if (machinePhase == MachinePhase.GANTRY_MINE && gantrySubstate != GantrySubstate.FREEZE) {
+            gantrySubstateBeforeFreeze = gantrySubstate;
+            gantrySubstate = GantrySubstate.FREEZE;
+        }
+    }
+
+    private void releaseFreeze(FreezeReason reason) {
+        if (!freezeLocks.remove(reason)) return;
+        if (machinePhase != MachinePhase.GANTRY_MINE) return;
+        if (gantrySubstate != GantrySubstate.FREEZE) return;
+        if (getHighestFreezeReason() != null) return;
+
+        if (finishEndpointTask) {
+            gantrySubstate = GantrySubstate.TRAVEL;
+            return;
+        }
+        gantrySubstate = gantrySubstateBeforeFreeze == GantrySubstate.NONE
+                ? GantrySubstate.MINE
+                : gantrySubstateBeforeFreeze;
+        gantrySubstateBeforeFreeze = GantrySubstate.NONE;
+    }
+
+    private void clearFreezeLocks() {
+        freezeLocks.clear();
+        gantrySubstateBeforeFreeze = GantrySubstate.NONE;
+    }
+
+    private int encodeFreezeMask() {
+        int mask = 0;
+        for (FreezeReason reason : freezeLocks) {
+            mask |= (1 << reason.ordinal());
+        }
+        return mask;
+    }
+
+    private void decodeFreezeMask(int mask) {
+        freezeLocks.clear();
+        FreezeReason[] values = FreezeReason.values();
+        for (FreezeReason reason : values) {
+            if ((mask & (1 << reason.ordinal())) != 0) {
+                freezeLocks.add(reason);
+            }
+        }
+    }
+
+    private boolean hasMachineOperationalPower(ServerWorld sw) {
+        if (energy.amount <= 0L) return false;
+        if (machinePhase == MachinePhase.NO_POWER) {
+            if (!hasResumeState) return true;
+            long required = getRequiredEnergyForPhase(sw, resumePhase);
+            return required <= 0L || energy.amount >= required;
+        }
+        if (active || frameRemovalActive || returnPhase != ReturnPhase.NONE) {
+            long required = getRequiredEnergyForNextOperation(sw);
+            return required <= 0L || energy.amount >= required;
+        }
+        return true;
+    }
+
+    private void enterNoPowerState(ServerWorld sw) {
+        if (machinePhase == MachinePhase.NO_POWER) return;
+        debugLog("power enter NO_POWER from phase={} laser={} gantry={} active={} frameRemoval={} energy={} required={}",
+                machinePhase, laserSubstate, gantrySubstate, active, frameRemovalActive, energy.amount, requiredEnergyForNextOp);
+        cacheResumeState();
+        if (machinePhase == MachinePhase.LASER_MINE) {
+            laserSubstate = LaserSubstate.LASER_MINE_IDLE;
+        }
+        if (machinePhase == MachinePhase.GANTRY_MINE) {
+            requestFreeze(FreezeReason.NO_POWER);
+        }
+        active = false;
+        frameRemovalActive = false;
+        returnPhase = ReturnPhase.NONE;
+        machinePhase = MachinePhase.NO_POWER;
+        updateStatusState(sw);
+        syncState();
+    }
+
+    private void handlePowerPhase(ServerWorld sw) {
+        if (!hasMachineOperationalPower(sw)) {
+            enterNoPowerState(sw);
+            return;
+        }
+        if (machinePhase == MachinePhase.NO_POWER) {
+            debugLog("power restored energy={} required={} resumeState={} resumePhase={} resumeLaser={} resumeGantry={}",
+                    energy.amount, requiredEnergyForNextOp, hasResumeState, resumePhase, resumeLaserSubstate, resumeGantrySubstate);
+            releaseFreeze(FreezeReason.NO_POWER);
+            if (hasResumeState) {
+                machinePhase = resumePhase;
+                laserSubstate = resumeLaserSubstate;
+                gantrySubstate = resumeGantrySubstate;
+                active = isOperationalActivePhase(resumePhase);
+                frameRemovalActive = resumePhase == MachinePhase.REMOVE_FRAME;
+                clearResumeState();
+            } else {
+                machinePhase = inferMachinePhaseFromRuntime();
+            }
+            BlockState state = sw.getBlockState(pos);
+            if (state.getBlock() instanceof BlockWithEntity && state.contains(QuarryBlock.ACTIVE) && state.get(QuarryBlock.ACTIVE) != active) {
+                sw.setBlockState(pos, state.with(QuarryBlock.ACTIVE, active), Block.NOTIFY_ALL);
+            }
+            debugLog("power resume applied phase={} laser={} gantry={} active={} frameRemoval={}",
+                    machinePhase, laserSubstate, gantrySubstate, active, frameRemovalActive);
+        }
+    }
+
+    private boolean isOperationalActivePhase(MachinePhase phase) {
+        return phase == MachinePhase.BUILD_FRAME
+                || phase == MachinePhase.FRAME_REPAIR
+                || phase == MachinePhase.LASER_MINE
+                || phase == MachinePhase.GANTRY_MINE;
+    }
+
+    private long getRequiredEnergyForPhase(ServerWorld sw, MachinePhase phase) {
+        return switch (phase) {
+            case BUILD_FRAME, FRAME_REPAIR, REMOVE_FRAME -> ModConfig.DATA.energyPerFrame;
+            case LASER_MINE, GANTRY_MINE -> getRequiredEnergyForMiningPhase(sw);
+            default -> 0L;
+        };
+    }
+
+    private long getRequiredEnergyForMiningPhase(ServerWorld sw) {
+        BlockPos rediscoveredTarget = null;
+        if (drainRediscoveryQueue) {
+            rediscoveredTarget = peekRediscoveryTarget(sw);
+        }
+        if (rediscoveredTarget != null) {
+            BlockState nextState = sw.getBlockState(rediscoveredTarget);
+            float hardness = nextState.getHardness(sw, rediscoveredTarget);
+            return ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
+        }
+
+        BlockPos nextTarget = getNextMineableTarget(sw);
+        if (nextTarget == null) return 0L;
+
+        BlockState nextState = sw.getBlockState(nextTarget);
+        float hardness = nextState.getHardness(sw, nextTarget);
+        return ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
+    }
+
+    private MachinePhase inferMachinePhaseFromRuntime() {
+        if (returnPhase == ReturnPhase.FINISHING || finishEndpointTask) return MachinePhase.FINISH;
+        if (returnPhase == ReturnPhase.STOPPING) return MachinePhase.STOPPING;
+        if (frameRemovalActive) return MachinePhase.REMOVE_FRAME;
+        if (active) {
+            if (frameIndex < (cachedFrame == null ? 0 : cachedFrame.size()) || !pendingFrameRepairs.isEmpty()) {
+                return pendingFrameRepairs.isEmpty() ? MachinePhase.BUILD_FRAME : MachinePhase.FRAME_REPAIR;
+            }
+            if (shouldUseTopLaserClient()) return MachinePhase.LASER_MINE;
+            return MachinePhase.GANTRY_MINE;
+        }
+        return MachinePhase.IDLE;
     }
 
     public boolean isValidEnergyItem(ItemStack stack) {
@@ -495,6 +944,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         cachedFrame = null;
         cachedFrameRemoval = null;
         cachedFrameLookup = null;
+        initFrameBuildComplete = false;
         pendingFrameRepairs.clear();
         frameRemovalActive = false;
         frameRemovalIndex = -1;
@@ -506,6 +956,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         miningBudget = 0.0;
         clearRediscoveryState();
         clearMiningTravelState();
+        clearFreezeLocks();
+        if (machinePhase != MachinePhase.NO_POWER) {
+            machinePhase = MachinePhase.IDLE;
+        }
+        laserSubstate = LaserSubstate.NONE;
+        gantrySubstate = GantrySubstate.NONE;
+        clearResumeState();
     }
 
     // ticking
@@ -520,7 +977,14 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         be.chargeFromEnergyItemSlot();
 
         be.expireStatusMessage(sw);
+        be.handlePowerPhase(sw);
         be.updateStatusState(sw);
+        if (be.machinePhase == MachinePhase.NO_POWER) {
+            return;
+        }
+        if (be.machinePhase == MachinePhase.STOPPING && be.returnPhase == ReturnPhase.NONE) {
+            be.machinePhase = MachinePhase.IDLE;
+        }
 
         if (!be.active && be.returnPhase == ReturnPhase.NONE && !be.frameRemovalActive) return;
         if (!be.areaLocked && be.returnPhase == ReturnPhase.NONE && !be.frameRemovalActive) return;
@@ -543,6 +1007,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         }
 
         if (be.returnPhase != ReturnPhase.NONE) {
+            be.machinePhase = (be.returnPhase == ReturnPhase.FINISHING) ? MachinePhase.FINISH : MachinePhase.STOPPING;
             be.miningBudget += be.getBlocksPerTick();
             be.stepReturnToOrigin(sw);
             be.miningBudget = Math.min(be.miningBudget, 1.0);
@@ -551,6 +1016,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         }
 
         if (be.frameRemovalActive) {
+            be.machinePhase = MachinePhase.REMOVE_FRAME;
             be.miningBudget += be.getBlocksPerTick();
             be.miningBudget = be.stepFrameRemoval(sw, be.miningBudget);
             be.miningBudget = Math.min(be.miningBudget, 1.0);
@@ -561,6 +1027,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         be.frameWorkBudget += be.getBlocksPerTick();
         int requestedFrameOps = (int) be.frameWorkBudget;
         if (requestedFrameOps > 0) {
+            be.machinePhase = be.pendingFrameRepairs.isEmpty() ? MachinePhase.BUILD_FRAME : MachinePhase.FRAME_REPAIR;
             int completedFrameOps = be.stepFrame(sw, requestedFrameOps);
             be.frameWorkBudget -= completedFrameOps;
             if (completedFrameOps < requestedFrameOps) {
@@ -568,11 +1035,30 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             }
         }
         if (be.frameIndex < be.cachedFrameSize(sw) || !be.pendingFrameRepairs.isEmpty()) return;
+        be.initFrameBuildComplete = true;
+        be.restoreFrameRepairCallerIfPresent();
+        be.releaseFreeze(FreezeReason.FRAME_REPAIR);
 
         if (!be.checkFrameIntegrityForCurrentLayer(sw)) return;
 
         be.ensureMiningInit(sw);
-        be.runRediscoveryScan(sw);
+        if (be.layerY < be.minY || be.drainRediscoveryQueue) {
+            be.runRediscoveryScan(sw);
+        }
+        boolean topLaserActive = be.shouldUseTopLaserClient() || be.drainRediscoveryQueue;
+        if (topLaserActive) {
+            be.machinePhase = MachinePhase.LASER_MINE;
+            be.laserSubstate = be.drainRediscoveryQueue ? LaserSubstate.LASER_MINE_REDISCOVERY : LaserSubstate.LASER_CLEAR_FRAME_AREA;
+            if (be.gantrySubstate != GantrySubstate.FREEZE) {
+                be.gantrySubstate = GantrySubstate.NONE;
+            }
+        } else {
+            be.machinePhase = MachinePhase.GANTRY_MINE;
+            be.laserSubstate = LaserSubstate.NONE;
+            if (be.gantrySubstate == GantrySubstate.NONE) {
+                be.gantrySubstate = GantrySubstate.MINE;
+            }
+        }
         be.miningBudget += be.getBlocksPerTick();
         be.miningBudget = be.stepMine(sw, be.miningBudget);
         be.miningBudget = Math.min(be.miningBudget, 1.0);
@@ -717,6 +1203,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private void finishFrameRemoval(ServerWorld sw) {
         frameRemovalActive = false;
         frameRemovalIndex = -1;
+        machinePhase = MachinePhase.IDLE;
         clearActiveMiningTarget();
         clearStatusMessage();
         ChunkTickets.clearTickets(sw, pos, this);
@@ -727,6 +1214,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         cachedFrame = null;
         cachedFrameRemoval = null;
         cachedFrameLookup = null;
+        initFrameBuildComplete = false;
         pendingFrameRepairs.clear();
         lastFrameCheckLayerY = Integer.MIN_VALUE;
         nextFrameIntegrityCheckTick = 0L;
@@ -738,7 +1226,9 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         clearRediscoveryState();
         clearMiningTravelState();
         areaLocked = false;
-        finished = false;
+        // Keep terminal finish flag sticky until block is replaced.
+        laserSubstate = LaserSubstate.NONE;
+        gantrySubstate = GantrySubstate.NONE;
 
         updateStatusState(sw);
         markDirty();
@@ -756,10 +1246,29 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private boolean ensureFrameIntegrity(ServerWorld sw, boolean force) {
         if (cachedFrame == null) cachedFrame = computeFrame();
         if (!force && sw.getTime() < nextFrameIntegrityCheckTick) return true;
+        if (!ModConfig.DATA.autoFrameRepair) {
+            releaseFreeze(FreezeReason.FRAME_REPAIR);
+            return true;
+        }
 
+        boolean freezeGantry = machinePhase == MachinePhase.GANTRY_MINE || resumePhase == MachinePhase.GANTRY_MINE;
+        boolean repairingInterrupt = machinePhase != MachinePhase.BUILD_FRAME && machinePhase != MachinePhase.FRAME_REPAIR;
+        if (repairingInterrupt) {
+            captureFrameRepairCallerIfNeeded(machinePhase, laserSubstate, gantrySubstate);
+        }
         collectMissingFrameBlocks(sw);
-        nextFrameIntegrityCheckTick = sw.getTime() + 20L;
-        if (pendingFrameRepairs.isEmpty()) return true;
+        nextFrameIntegrityCheckTick = sw.getTime() + ModConfig.DATA.frameRebuildScanInterval;
+        if (pendingFrameRepairs.isEmpty()) {
+            releaseFreeze(FreezeReason.FRAME_REPAIR);
+            if (repairingInterrupt) {
+                restoreFrameRepairCallerIfPresent();
+            }
+            return true;
+        }
+        machinePhase = MachinePhase.FRAME_REPAIR;
+        if (freezeGantry) {
+            requestFreeze(FreezeReason.FRAME_REPAIR);
+        }
         updateStatusState(sw);
         return false;
     }
@@ -781,12 +1290,6 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         for (int y = minY + 1; y < maxY; y++) {
             addOrderedPosts(out, y);
-        }
-
-        if (ModConfig.DATA.buildDescendingRing) {
-            for (int y = minY + ModConfig.DATA.frameCrossmemberSpacing; y < maxY; y += ModConfig.DATA.frameCrossmemberSpacing) {
-                addOrderedFrameRing(out, y);
-            }
         }
 
         addOrderedFrameRing(out, maxY);
@@ -820,14 +1323,6 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             if (startIdx > 0) Collections.rotate(topRing, -startIdx);
         }
         ordered.addAll(topRing);
-
-        if (ModConfig.DATA.buildDescendingRing && ModConfig.DATA.frameCrossmemberSpacing > 0) {
-            for (int y = maxY - 1; y > minY; y--) {
-                if ((y - minY) % ModConfig.DATA.frameCrossmemberSpacing == 0) {
-                    addRemovalRingLines(ordered, y);
-                }
-            }
-        }
 
         addRemovalPostLines(ordered);
         addRemovalRingLines(ordered, minY);
@@ -939,12 +1434,14 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private void ensureMiningInit(ServerWorld sw) {
         if (layerY != Integer.MIN_VALUE) return;
         if (!hasMineableInterior()) {
+            debugLog("ensureMiningInit aborted: no mineable interior");
             setActive(false);
             return;
         }
 
         int topY = findHighestMineableY(sw);
         if (topY == Integer.MIN_VALUE) {
+            debugLog("ensureMiningInit: no mineable target found, stopping");
             clientTargetPacked = 0L;
             stopAndRemoveFrame();
             return;
@@ -952,8 +1449,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         startTopY = topY;
         layerY = topY;
-        cursorX = minX + 1;
-        cursorZ = minZ + 1;
+        cursorX = traversalMinXForLayer(topY);
+        cursorZ = traversalMinZForLayer(topY);
         xForward = true;
         zForward = true;
         lastFrameCheckLayerY = Integer.MIN_VALUE;
@@ -965,13 +1462,43 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         clearMiningTravelState();
         rediscoveryLayerY = maxY;
         finalRediscoverySweepDone = false;
+        debugLog("ensureMiningInit complete topY={} cursor=({}, {}, {})", topY, cursorX, layerY, cursorZ);
         setToolHeadPos(getToolHeadOriginPos());
 
         if (!seekNextMineable(sw)) {
             clientTargetPacked = 0L;
             stopAndRemoveFrame();
+            return;
         }
+        primeMiningPhaseFromFirstTarget(sw);
         updateStatusState(sw);
+    }
+
+    private void primeMiningPhaseFromFirstTarget(ServerWorld sw) {
+        WorkTarget firstTarget = getNextMiningTarget(sw);
+        if (firstTarget == null) {
+            clientTargetPacked = 0L;
+            stopAndRemoveFrame();
+            return;
+        }
+
+        if (isTopLaserPhaseTarget(firstTarget)) {
+            machinePhase = MachinePhase.LASER_MINE;
+            laserSubstate = (firstTarget.type() == WorkType.REDISCOVERY)
+                    ? LaserSubstate.LASER_MINE_REDISCOVERY
+                    : LaserSubstate.LASER_CLEAR_FRAME_AREA;
+            if (gantrySubstate != GantrySubstate.FREEZE) {
+                gantrySubstate = GantrySubstate.NONE;
+            }
+            return;
+        }
+
+        machinePhase = MachinePhase.GANTRY_MINE;
+        laserSubstate = LaserSubstate.NONE;
+        if (gantrySubstate != GantrySubstate.FREEZE) {
+            double distance = getToolHeadPos().distanceTo(Vec3d.ofCenter(firstTarget.pos()));
+            gantrySubstate = distance > 1.0 ? GantrySubstate.TRAVEL : GantrySubstate.MINE;
+        }
     }
 
     @Nullable
@@ -980,12 +1507,6 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (activeTarget != null) return activeTarget;
 
         if (drainRediscoveryQueue) {
-            BlockPos insetTarget = peekInsetRediscoveryTarget(sw);
-            if (insetTarget != null) {
-                WorkTarget target = new WorkTarget(insetTarget, WorkType.REDISCOVERY_INSET);
-                setActiveMiningTarget(target);
-                return target;
-            }
             BlockPos rediscoveryTarget = peekRediscoveryTarget(sw);
             if (rediscoveryTarget != null) {
                 WorkTarget target = new WorkTarget(rediscoveryTarget, WorkType.REDISCOVERY);
@@ -1004,12 +1525,19 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private double stepMine(ServerWorld sw, double budget) {
         int bottom = sw.getBottomY();
         while (budget > 1.0E-6) {
+            MachinePhase previousPhase = machinePhase;
+            LaserSubstate previousLaserSubstate = laserSubstate;
+            GantrySubstate previousGantrySubstate = gantrySubstate;
+            boolean wasGantryMine = machinePhase == MachinePhase.GANTRY_MINE
+                    && gantrySubstate == GantrySubstate.MINE;
             WorkTarget target = getNextMiningTarget(sw);
             if (target == null) {
                 if (!finalRediscoverySweepDone) {
                     runFinalRediscoveryScan(sw);
                     finalRediscoverySweepDone = true;
                     if (hasPendingRediscoveryWork()) {
+                        debugLog("rediscovery drain start after final scan queue(size={})",
+                                pendingRediscoveryTargets.size());
                         drainRediscoveryQueue = true;
                         continue;
                     }
@@ -1018,15 +1546,89 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 return budget;
             }
 
-            if (!isTopLaserPhaseTarget(target)) {
+            boolean rediscoveryTarget = target.type() == WorkType.REDISCOVERY;
+            if (!rediscoveryTarget && rediscoveryCallerActive && !drainRediscoveryQueue && !hasPendingRediscoveryWork()) {
+                debugLog("rediscovery caller restore phase={} laser={} gantry={}",
+                        rediscoveryCallerPhase, rediscoveryCallerLaserSubstate, rediscoveryCallerGantrySubstate);
+                restoreRediscoveryCallerIfPresent();
+                previousPhase = machinePhase;
+                previousLaserSubstate = laserSubstate;
+                previousGantrySubstate = gantrySubstate;
+            }
+
+            machinePhase = MachinePhase.LASER_MINE;
+            laserSubstate = rediscoveryTarget
+                    ? LaserSubstate.LASER_MINE_REDISCOVERY
+                    : LaserSubstate.LASER_CLEAR_FRAME_AREA;
+            if (rediscoveryTarget) {
+                boolean alreadyInRediscovery = previousPhase == MachinePhase.LASER_MINE
+                        && previousLaserSubstate == LaserSubstate.LASER_MINE_REDISCOVERY;
+                if (!alreadyInRediscovery) {
+                    captureRediscoveryCallerIfNeeded(previousPhase, previousLaserSubstate, previousGantrySubstate);
+                    // Enter rediscovery with the cube already inside the wander volume for the first target.
+                    laserCubeTravelX = target.pos().getX() + 0.5;
+                    laserCubeTravelY = target.pos().getY() + 0.5 + REDISCOVERY_LASER_TARGET_Y_OFFSET;
+                    laserCubeTravelZ = target.pos().getZ() + 0.5;
+                    rediscoveryServerVolumeOriginY = Double.NaN;
+                    rediscoveryLaserVerticalTravelActive = false;
+                    debugLog("rediscovery enter: cube snap in-volume target={} cubeY={} callerPhase={} callerLaser={} callerGantry={}",
+                            target.pos(), laserCubeTravelY, previousPhase, previousLaserSubstate, previousGantrySubstate);
+                }
+                if (wasGantryMine || (rediscoveryCallerPhase == MachinePhase.GANTRY_MINE && rediscoveryCallerGantrySubstate == GantrySubstate.MINE)) {
+                    requestFreeze(FreezeReason.REDISCOVERY);
+                }
+            } else {
+                releaseFreeze(FreezeReason.REDISCOVERY);
+            }
+
+            if (!rediscoveryTarget && !isTopLaserPhaseTarget(target)) {
+                machinePhase = MachinePhase.GANTRY_MINE;
+                laserSubstate = LaserSubstate.NONE;
                 Vec3d targetPos = Vec3d.ofCenter(target.pos());
                 double distance = getToolHeadPos().distanceTo(targetPos);
                 if (distance > 1.0E-6) {
+                    boolean longTravel = distance > 1.0;
+                    if (gantrySubstate != GantrySubstate.FREEZE) {
+                        double roundedDistance = Math.round(distance * 1000.0) / 1000.0;
+                        if (distance > GANTRY_TRAVEL_LOG_MIN_DISTANCE
+                                && roundedDistance > GANTRY_TRAVEL_LOG_ROUNDED_MIN_DISTANCE
+                                && gantrySubstate != GantrySubstate.TRAVEL) {
+                            debugLog("gantry travel start target={} distance={} budget={}",
+                                    target.pos(), String.format(java.util.Locale.ROOT, "%.3f", distance), String.format(java.util.Locale.ROOT, "%.3f", budget));
+                        }
+                        // Keep short (<=1 block) motion in MINE substate to avoid travel-state log churn.
+                        gantrySubstate = longTravel ? GantrySubstate.TRAVEL : GantrySubstate.MINE;
+                    }
                     double moved = moveToolHeadTowards(targetPos, budget);
                     budget -= moved;
                     if (budget <= 1.0E-6) return 0.0;
+                    if (getToolHeadPos().distanceTo(targetPos) > 1.0E-6) {
+                        continue;
+                    }
+                }
+                if (gantrySubstate != GantrySubstate.FREEZE) {
+                    gantrySubstate = GantrySubstate.MINE;
+                }
+            } else if (gantrySubstate != GantrySubstate.FREEZE) {
+                gantrySubstate = GantrySubstate.NONE;
+            }
+
+            if (target.type() == WorkType.REDISCOVERY) {
+                double updatedBudget = applyRediscoveryLaserVerticalTravel(target, budget);
+                if (updatedBudget < budget - 1.0E-6) {
+                    budget = updatedBudget;
+                    if (budget <= 1.0E-6) return 0.0;
                     continue;
                 }
+            } else {
+                if (rediscoveryLaserVerticalTravelActive) {
+                    debugLog("rediscovery vertical travel canceled: switched targetType={} target={}", target.type(), target.pos());
+                }
+                rediscoveryLaserVerticalTravelActive = false;
+                laserCubeTravelX = Double.NaN;
+                laserCubeTravelY = Double.NaN;
+                laserCubeTravelZ = Double.NaN;
+                rediscoveryServerVolumeOriginY = Double.NaN;
             }
 
             if (budget < 1.0) return budget;
@@ -1034,12 +1636,19 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             BlockState st = sw.getBlockState(target.pos());
             if (!harvestBlock(sw, target.pos(), st)) return Math.min(budget, 1.0);
 
+            if (machinePhase == MachinePhase.GANTRY_MINE && gantrySubstate != GantrySubstate.FREEZE) {
+                gantrySubstate = GantrySubstate.MINE;
+            }
+
             recordRecentRenderTarget(sw, target.pos());
             clearActiveMiningTarget();
-            if (target.type() == WorkType.REDISCOVERY_INSET) {
-                completeInsetRediscoveryTarget();
-            } else if (target.type() == WorkType.REDISCOVERY) {
+            if (target.type() == WorkType.REDISCOVERY) {
                 completeRediscoveryTarget();
+                if (!drainRediscoveryQueue && pendingRediscoveryTargets.isEmpty()) {
+                    debugLog("rediscovery drain complete; release freeze/caller");
+                    releaseFreeze(FreezeReason.REDISCOVERY);
+                    restoreRediscoveryCallerIfPresent();
+                }
             } else {
                 int previousLayerY = layerY;
                 advanceCursor();
@@ -1051,7 +1660,12 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                     }
                 }
                 if (layerY < previousLayerY) {
-                    drainRediscoveryQueue = hasPendingRediscoveryWork();
+                    boolean nextDrain = hasPendingRediscoveryWork();
+                    if (nextDrain != drainRediscoveryQueue) {
+                        debugLog("rediscovery drain toggled {} -> {} at layer change {} -> {}",
+                                drainRediscoveryQueue, nextDrain, previousLayerY, layerY);
+                    }
+                    drainRediscoveryQueue = nextDrain;
                 }
             }
             budget -= 1.0;
@@ -1063,6 +1677,97 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             }
         }
         return budget;
+    }
+
+    private double applyRediscoveryLaserVerticalTravel(WorkTarget target, double budget) {
+        Vec3d targetCenter = Vec3d.ofCenter(target.pos());
+        Vec3d targetPos = new Vec3d(targetCenter.x, targetCenter.y + REDISCOVERY_LASER_TARGET_Y_OFFSET, targetCenter.z);
+        if (Double.isNaN(laserCubeTravelX) || Double.isNaN(laserCubeTravelY) || Double.isNaN(laserCubeTravelZ)) {
+            laserCubeTravelX = targetPos.x;
+            laserCubeTravelY = targetPos.y;
+            laserCubeTravelZ = targetPos.z;
+        }
+
+        Vec3d cubePos = new Vec3d(laserCubeTravelX, laserCubeTravelY, laserCubeTravelZ);
+        RediscoveryServerVolume volume = computeRediscoveryServerVolume(target.pos(), cubePos);
+        Vec3d desiredPos = clampToRediscoveryServerVolume(volume, targetPos);
+        boolean wasTraveling = rediscoveryLaserVerticalTravelActive;
+
+        if (!rediscoveryLaserVerticalTravelActive
+                && Math.abs(targetPos.y - cubePos.y) > REDISCOVERY_VOLUME_SHIFT_TRIGGER) {
+            rediscoveryLaserVerticalTravelActive = true;
+            debugLog("rediscovery vertical travel start target={} cubePos={} targetPos={} volumeY=[{},{}]",
+                    target.pos(), cubePos, desiredPos, volume.minY, volume.maxY);
+        }
+        if (!rediscoveryLaserVerticalTravelActive) {
+            laserCubeTravelX = desiredPos.x;
+            laserCubeTravelY = desiredPos.y;
+            laserCubeTravelZ = desiredPos.z;
+            return budget;
+        }
+
+        // While outside the active rediscovery volume, consume travel budget and do not harvest yet.
+        Vec3d delta = desiredPos.subtract(cubePos);
+        double distance = delta.length();
+        double moved = Math.min(budget, distance);
+        Vec3d nextPos = distance <= 1.0E-6 ? desiredPos : cubePos.add(delta.multiply(moved / distance));
+        laserCubeTravelX = nextPos.x;
+        laserCubeTravelY = nextPos.y;
+        laserCubeTravelZ = nextPos.z;
+
+        if (isInsideRediscoveryServerVolume(volume, nextPos)) {
+            rediscoveryLaserVerticalTravelActive = false;
+        }
+        if (wasTraveling && !rediscoveryLaserVerticalTravelActive) {
+            debugLog("rediscovery vertical travel stop target={} cubePos={} targetPos={} volumeY=[{},{}]",
+                    target.pos(), nextPos, desiredPos, volume.minY, volume.maxY);
+        }
+        return Math.max(0.0, budget - moved);
+    }
+
+    private RediscoveryServerVolume computeRediscoveryServerVolume(BlockPos target, Vec3d cubePos) {
+        int innerMinX = minX + 1;
+        int innerMaxX = maxX - 1;
+        int innerMinY = minY + 1;
+        int innerMaxY = maxY - 1;
+        int innerMinZ = minZ + 1;
+        int innerMaxZ = maxZ - 1;
+
+        double centerX = (innerMinX + innerMaxX + 1) * 0.5;
+        double centerY = (innerMinY + innerMaxY + 1) * 0.5;
+        double centerZ = (innerMinZ + innerMaxZ + 1) * 0.5;
+        double originY = Double.isNaN(rediscoveryServerVolumeOriginY) ? centerY : rediscoveryServerVolumeOriginY;
+        double targetY = target.getY() + 0.5 + REDISCOVERY_LASER_TARGET_Y_OFFSET;
+        if (Math.abs(targetY - originY) > REDISCOVERY_VOLUME_SHIFT_TRIGGER) {
+            originY = targetY;
+        }
+        rediscoveryServerVolumeOriginY = originY;
+
+        double miningWidthX = Math.max(1.0, innerMaxX - innerMinX + 1.0);
+        double miningWidthZ = Math.max(1.0, innerMaxZ - innerMinZ + 1.0);
+        double halfX = Math.max(0.2, (miningWidthX * REDISCOVERY_VOLUME_WIDTH_RATIO) * 0.5);
+        double halfZ = Math.max(0.2, (miningWidthZ * REDISCOVERY_VOLUME_WIDTH_RATIO) * 0.5);
+        double halfY = REDISCOVERY_VOLUME_HEIGHT * 0.5;
+
+        return new RediscoveryServerVolume(
+                centerX - halfX, centerX + halfX,
+                originY - halfY, originY + halfY,
+                centerZ - halfZ, centerZ + halfZ
+        );
+    }
+
+    private static boolean isInsideRediscoveryServerVolume(RediscoveryServerVolume volume, Vec3d pos) {
+        return pos.x >= volume.minX && pos.x <= volume.maxX
+                && pos.y >= volume.minY && pos.y <= volume.maxY
+                && pos.z >= volume.minZ && pos.z <= volume.maxZ;
+    }
+
+    private static Vec3d clampToRediscoveryServerVolume(RediscoveryServerVolume volume, Vec3d pos) {
+        return new Vec3d(
+                MathHelper.clamp(pos.x, volume.minX, volume.maxX),
+                MathHelper.clamp(pos.y, volume.minY, volume.maxY),
+                MathHelper.clamp(pos.z, volume.minZ, volume.maxZ)
+        );
     }
 
     private boolean reseedCursorForGantryPhase(ServerWorld sw) {
@@ -1150,18 +1855,42 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private boolean isTopLaserPhaseTarget(WorkTarget target) {
-        if (target.type() == WorkType.REDISCOVERY_INSET) return true;
-        if (target.type() == WorkType.REDISCOVERY) return false;
+        if (target.type() == WorkType.REDISCOVERY) return true;
         return target.pos().getY() >= minY;
+    }
+
+    private int traversalMinXForLayer(int y) {
+        return y >= minY ? minX : minX + 1;
+    }
+
+    private int traversalMaxXForLayer(int y) {
+        return y >= minY ? maxX : maxX - 1;
+    }
+
+    private int traversalMinZForLayer(int y) {
+        return y >= minY ? minZ : minZ + 1;
+    }
+
+    private int traversalMaxZForLayer(int y) {
+        return y >= minY ? maxZ : maxZ - 1;
+    }
+
+    private boolean isMineableTraversalTarget(ServerWorld sw, BlockPos target, BlockState state) {
+        if (target.getY() >= minY && state.isOf(ModBlocks.FRAME)) return false;
+        return isMineableTarget(sw, target, state);
     }
 
     private int findHighestMineableY(ServerWorld sw) {
         int bottom = sw.getBottomY();
         for (int y = maxY; y >= bottom; y--) {
-            for (int z = minZ + 1; z <= maxZ - 1; z++) {
-                for (int x = minX + 1; x <= maxX - 1; x++) {
+            int minScanX = traversalMinXForLayer(y);
+            int maxScanX = traversalMaxXForLayer(y);
+            int minScanZ = traversalMinZForLayer(y);
+            int maxScanZ = traversalMaxZForLayer(y);
+            for (int z = minScanZ; z <= maxScanZ; z++) {
+                for (int x = minScanX; x <= maxScanX; x++) {
                     BlockPos target = new BlockPos(x, y, z);
-                    if (isMineableTarget(sw, target, sw.getBlockState(target))) return y;
+                    if (isMineableTraversalTarget(sw, target, sw.getBlockState(target))) return y;
                 }
             }
         }
@@ -1173,7 +1902,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         while (layerY >= bottom) {
             BlockPos target = new BlockPos(cursorX, layerY, cursorZ);
             BlockState state = sw.getBlockState(target);
-            if (isMineableTarget(sw, target, state)) {
+            if (isMineableTraversalTarget(sw, target, state)) {
                 return true;
             }
             advanceCursor();
@@ -1324,14 +2053,64 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     private void autoExport(ServerWorld sw) {
         if (!shouldAutoExport(sw)) return;
-        for (Direction dir : Direction.values()) {
-            if (!sideAllows(ItemIoGroup.OUTPUT, dir, true)) continue;
-            BlockPos npos = pos.offset(dir);
-            Storage<ItemVariant> to = ItemStorage.SIDED.find(sw, npos, dir.getOpposite());
-            if (to == null) continue;
-
-            output.pushTo(to, output.items.size());
+        boolean debugAutoExport = ModConfig.DATA.debug && autoExportDebugLogging;
+        if (debugAutoExport && !output.isEmpty()) {
+            QuarryReforged.LOGGER.info(
+                    "[AutoExport] start quarry={} outputItems={}",
+                    pos,
+                    output.totalItemCount()
+            );
         }
+        for (Direction dir : Direction.values()) {
+            if (!sideAllows(ItemIoGroup.OUTPUT, dir, true)) {
+                if (debugAutoExport && !output.isEmpty()) {
+                    QuarryReforged.LOGGER.info("[AutoExport] skip side={}, reason=side_mode_blocked", dir);
+                }
+                continue;
+            }
+            BlockPos npos = pos.offset(dir);
+            Storage<ItemVariant> to = resolveAdjacentItemStorage(sw, npos, dir.getOpposite());
+            if (to == null) {
+                if (debugAutoExport && !output.isEmpty()) {
+                    QuarryReforged.LOGGER.info("[AutoExport] side={} target={} storage=none", dir, npos);
+                }
+                continue;
+            }
+
+            long before = output.totalItemCount();
+            int ops = output.pushTo(to, output.items.size());
+            long after = output.totalItemCount();
+            if (debugAutoExport && (!output.isEmpty() || before != after)) {
+                QuarryReforged.LOGGER.info(
+                        "[AutoExport] side={} target={} storage=found ops={} movedItems={} remaining={}",
+                        dir,
+                        npos,
+                        ops,
+                        Math.max(0L, before - after),
+                        after
+                );
+            }
+        }
+    }
+
+    @Nullable
+    private Storage<ItemVariant> resolveAdjacentItemStorage(ServerWorld sw, BlockPos targetPos, Direction insertFromSide) {
+        Storage<ItemVariant> sided = ItemStorage.SIDED.find(sw, targetPos, insertFromSide);
+        if (sided != null) return sided;
+
+        Storage<ItemVariant> unsided = ItemStorage.SIDED.find(sw, targetPos, null);
+        if (unsided != null) return unsided;
+
+        for (Direction side : Direction.values()) {
+            Storage<ItemVariant> fromAnySide = ItemStorage.SIDED.find(sw, targetPos, side);
+            if (fromAnySide != null) return fromAnySide;
+        }
+
+        BlockEntity targetBe = sw.getBlockEntity(targetPos);
+        if (targetBe instanceof Inventory inventory) {
+            return InventoryStorage.of(inventory, insertFromSide);
+        }
+        return null;
     }
 
     private boolean shouldAutoExport(ServerWorld sw) {
@@ -1348,44 +2127,50 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private CursorState advanceCursor(int currentX, int currentY, int currentZ, boolean movingForward, boolean movingTowardMaxZ) {
-        int innerMinX = minX + 1;
-        int innerMaxX = maxX - 1;
-        int innerMinZ = minZ + 1;
-        int innerMaxZ = maxZ - 1;
+        int scanMinX = traversalMinXForLayer(currentY);
+        int scanMaxX = traversalMaxXForLayer(currentY);
+        int scanMinZ = traversalMinZForLayer(currentY);
+        int scanMaxZ = traversalMaxZForLayer(currentY);
 
         if (movingTowardMaxZ) {
-            if (currentZ < innerMaxZ) return new CursorState(currentX, currentY, currentZ + 1, movingForward, true);
+            if (currentZ < scanMaxZ) return new CursorState(currentX, currentY, currentZ + 1, movingForward, true);
         } else {
-            if (currentZ > innerMinZ) return new CursorState(currentX, currentY, currentZ - 1, movingForward, false);
+            if (currentZ > scanMinZ) return new CursorState(currentX, currentY, currentZ - 1, movingForward, false);
         }
 
         boolean nextZDirection = !movingTowardMaxZ;
         if (movingForward) {
-            if (currentX < innerMaxX) return new CursorState(currentX + 1, currentY, currentZ, true, nextZDirection);
+            if (currentX < scanMaxX) return new CursorState(currentX + 1, currentY, currentZ, true, nextZDirection);
         } else {
-            if (currentX > innerMinX) return new CursorState(currentX - 1, currentY, currentZ, false, nextZDirection);
+            if (currentX > scanMinX) return new CursorState(currentX - 1, currentY, currentZ, false, nextZDirection);
         }
 
         // Reverse the entire serpentine when stepping down so the next layer mirrors the previous one.
         currentY--;
+        int nextMinX = traversalMinXForLayer(currentY);
+        int nextMaxX = traversalMaxXForLayer(currentY);
+        int nextMinZ = traversalMinZForLayer(currentY);
+        int nextMaxZ = traversalMaxZForLayer(currentY);
+        int clampedX = MathHelper.clamp(currentX, nextMinX, nextMaxX);
+        int clampedZ = MathHelper.clamp(currentZ, nextMinZ, nextMaxZ);
         if (currentY < gantryEntryLayerY) {
             gantryEntryLayerY = Integer.MIN_VALUE;
             gantryEntryDeferredDropPending = false;
         }
-        return new CursorState(currentX, currentY, currentZ, !movingForward, nextZDirection);
+        return new CursorState(clampedX, currentY, clampedZ, !movingForward, nextZDirection);
     }
 
     private void runRediscoveryScan(ServerWorld sw) {
         if (startTopY == Integer.MIN_VALUE) return;
         if (layerY == Integer.MIN_VALUE) return;
         if (sw.getTime() < nextRediscoveryScanTick) return;
-        nextRediscoveryScanTick = sw.getTime() + 20L;
+        nextRediscoveryScanTick = sw.getTime() + ModConfig.DATA.rediscoveryScanIntervalTicks;
 
         // Rediscovery should only scan layers that are already fully passed by the mining cursor.
         // Scanning the current layer can enqueue still-pending blocks and make traversal appear to skip rows.
-        int highestCompletedLayer = startTopY;
+        int highestCompletedLayer = maxY;
         int lowestTrackedLayer = sw.getBottomY();
-        int lowestCompletedLayer = layerY + 1;
+        int lowestCompletedLayer = Math.min(maxY, layerY + 1);
         if (lowestCompletedLayer > highestCompletedLayer) return;
         lowestCompletedLayer = Math.max(lowestCompletedLayer, lowestTrackedLayer);
 
@@ -1419,27 +2204,9 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private BlockPos peekRediscoveryTarget(ServerWorld sw) {
         while (!pendingRediscoveryTargets.isEmpty()) {
             BlockPos target = pendingRediscoveryTargets.peekFirst();
-            if (target.getY() >= minY) {
-                // At/above the frame floor rediscovery belongs to the laser queue.
-                pendingRediscoveryTargets.removeFirst();
-                pendingRediscoveryTargetSet.remove(target.asLong());
-                enqueueInsetRediscoveryTarget(target);
-                continue;
-            }
             if (isMineableTarget(sw, target, sw.getBlockState(target))) return target;
             pendingRediscoveryTargets.removeFirst();
             pendingRediscoveryTargetSet.remove(target.asLong());
-        }
-        return null;
-    }
-
-    @Nullable
-    private BlockPos peekInsetRediscoveryTarget(ServerWorld sw) {
-        while (!pendingInsetRediscoveryTargets.isEmpty()) {
-            BlockPos target = pendingInsetRediscoveryTargets.peekFirst();
-            if (isMineableTarget(sw, target, sw.getBlockState(target))) return target;
-            pendingInsetRediscoveryTargets.removeFirst();
-            pendingInsetRediscoveryTargetSet.remove(target.asLong());
         }
         return null;
     }
@@ -1450,24 +2217,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         pendingRediscoveryTargetSet.remove(target.asLong());
     }
 
-    private void completeInsetRediscoveryTarget() {
-        if (pendingInsetRediscoveryTargets.isEmpty()) return;
-        BlockPos target = pendingInsetRediscoveryTargets.removeFirst();
-        pendingInsetRediscoveryTargetSet.remove(target.asLong());
-    }
-
     private boolean hasPendingRediscoveryWork() {
-        return !pendingInsetRediscoveryTargets.isEmpty() || !pendingRediscoveryTargets.isEmpty();
+        return !pendingRediscoveryTargets.isEmpty();
     }
 
     private boolean enqueueRediscoveryCandidate(BlockPos target) {
-        // Route all blocks at/above the frame floor to the laser/inset rediscovery queue.
-        if (target.getY() >= minY) {
-            return enqueueInsetRediscoveryTarget(target);
-        }
-        if (isInsetRediscoveryTarget(target)) {
-            return enqueueInsetRediscoveryTarget(target);
-        }
         return enqueueRediscoveryTarget(target);
     }
 
@@ -1513,33 +2267,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         return false;
     }
 
-    private boolean enqueueInsetRediscoveryTarget(BlockPos target) {
-        long packed = target.asLong();
-        if (pendingInsetRediscoveryTargetSet.add(packed)) {
-            if (pendingInsetRediscoveryTargets.isEmpty()) {
-                pendingInsetRediscoveryTargets.addLast(target);
-                return true;
-            }
-
-            List<BlockPos> reordered = new ArrayList<>(pendingInsetRediscoveryTargets.size() + 1);
-            boolean inserted = false;
-            for (BlockPos queued : pendingInsetRediscoveryTargets) {
-                if (!inserted && compareRediscoveryTargets(target, queued) < 0) {
-                    reordered.add(target);
-                    inserted = true;
-                }
-                reordered.add(queued);
-            }
-            if (!inserted) reordered.add(target);
-
-            pendingInsetRediscoveryTargets.clear();
-            pendingInsetRediscoveryTargets.addAll(reordered);
-            return true;
-        }
-        return false;
-    }
-
     private int compareRediscoveryTargets(BlockPos left, BlockPos right) {
+        // Preserve prior behavior: inset-facing rediscovery targets are drained before others.
+        boolean leftInset = isInsetRediscoveryTarget(left);
+        boolean rightInset = isInsetRediscoveryTarget(right);
+        if (leftInset != rightInset) {
+            return leftInset ? -1 : 1;
+        }
         int byY = Integer.compare(right.getY(), left.getY());
         if (byY != 0) return byY;
         int byX = Integer.compare(left.getX(), right.getX());
@@ -1550,13 +2284,21 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private void clearRediscoveryState() {
         pendingRediscoveryTargets.clear();
         pendingRediscoveryTargetSet.clear();
-        pendingInsetRediscoveryTargets.clear();
-        pendingInsetRediscoveryTargetSet.clear();
         rediscoveryLayerY = Integer.MIN_VALUE;
         nextRediscoveryScanTick = 0L;
         drainRediscoveryQueue = false;
+        rediscoveryLaserVerticalTravelActive = false;
+        laserCubeTravelX = Double.NaN;
+        laserCubeTravelY = Double.NaN;
+        laserCubeTravelZ = Double.NaN;
+        rediscoveryServerVolumeOriginY = Double.NaN;
         rediscoveryFullRescanPending = false;
         finalRediscoverySweepDone = false;
+        rediscoveryCallerActive = false;
+        rediscoveryCallerPhase = MachinePhase.IDLE;
+        rediscoveryCallerLaserSubstate = LaserSubstate.NONE;
+        rediscoveryCallerGantrySubstate = GantrySubstate.NONE;
+        releaseFreeze(FreezeReason.REDISCOVERY);
     }
 
     private void runFinalRediscoveryScan(ServerWorld sw) {
@@ -1612,7 +2354,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                     BlockPos target = new BlockPos(x, y, z);
                     BlockState state = sw.getBlockState(target);
                     if (!isMineableTarget(sw, target, state)) continue;
-                    if (enqueueInsetRediscoveryTarget(target)) detected = true;
+                    if (enqueueRediscoveryCandidate(target)) detected = true;
                 }
             }
             return detected;
@@ -1623,23 +2365,23 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         for (int x = innerMinX; x <= innerMaxX; x++) {
             BlockPos north = new BlockPos(x, y, innerMinZ);
             BlockState northState = sw.getBlockState(north);
-            if (isMineableTarget(sw, north, northState) && enqueueInsetRediscoveryTarget(north)) detected = true;
+            if (isMineableTarget(sw, north, northState) && enqueueRediscoveryCandidate(north)) detected = true;
 
             if (innerMaxZ != innerMinZ) {
                 BlockPos south = new BlockPos(x, y, innerMaxZ);
                 BlockState southState = sw.getBlockState(south);
-                if (isMineableTarget(sw, south, southState) && enqueueInsetRediscoveryTarget(south)) detected = true;
+                if (isMineableTarget(sw, south, southState) && enqueueRediscoveryCandidate(south)) detected = true;
             }
         }
         for (int z = innerMinZ + 1; z <= innerMaxZ - 1; z++) {
             BlockPos west = new BlockPos(innerMinX, y, z);
             BlockState westState = sw.getBlockState(west);
-            if (isMineableTarget(sw, west, westState) && enqueueInsetRediscoveryTarget(west)) detected = true;
+            if (isMineableTarget(sw, west, westState) && enqueueRediscoveryCandidate(west)) detected = true;
 
             if (innerMaxX != innerMinX) {
                 BlockPos east = new BlockPos(innerMaxX, y, z);
                 BlockState eastState = sw.getBlockState(east);
-                if (isMineableTarget(sw, east, eastState) && enqueueInsetRediscoveryTarget(east)) detected = true;
+                if (isMineableTarget(sw, east, eastState) && enqueueRediscoveryCandidate(east)) detected = true;
             }
         }
         return detected;
@@ -1703,12 +2445,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         WorkType type = WorkType.values()[activeMiningTargetType];
         BlockPos targetPos = BlockPos.fromLong(activeMiningTargetPacked);
-        if (type == WorkType.REDISCOVERY_INSET) {
-            if (!targetPos.equals(peekInsetRediscoveryTarget(sw))) {
-                clearActiveMiningTarget();
-                return null;
-            }
-        } else if (type == WorkType.REDISCOVERY) {
+        if (type == WorkType.REDISCOVERY || type == WorkType.REDISCOVERY_INSET) {
             if (!targetPos.equals(peekRediscoveryTarget(sw))) {
                 clearActiveMiningTarget();
                 return null;
@@ -1743,7 +2480,16 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private void clearMiningTravelState() {
         clearActiveMiningTarget();
         returnPhase = ReturnPhase.NONE;
-        suppressGantryDuringReturn = false;
+        clearFreezeLocks();
+        frameRepairCallerActive = false;
+        frameRepairCallerPhase = MachinePhase.IDLE;
+        frameRepairCallerLaserSubstate = LaserSubstate.NONE;
+        frameRepairCallerGantrySubstate = GantrySubstate.NONE;
+        rediscoveryLaserVerticalTravelActive = false;
+        laserCubeTravelX = Double.NaN;
+        laserCubeTravelY = Double.NaN;
+        laserCubeTravelZ = Double.NaN;
+        rediscoveryServerVolumeOriginY = Double.NaN;
         renderChannelRecentTargetPacked = 0L;
         renderChannelRecentTargetUntilTick = 0L;
         gantryEntryLayerY = Integer.MIN_VALUE;
@@ -1760,13 +2506,12 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private void beginReturnToOrigin(ServerWorld sw, ReturnPhase phase) {
         if (returnPhase != ReturnPhase.NONE) return;
 
-        boolean frameWorkPending = frameIndex < cachedFrameSize(sw)
-                || !pendingFrameRepairs.isEmpty();
-        boolean topLaserPhase = !frameWorkPending && shouldUseTopLaserClient();
-
+        debugLog("return begin phase={} from machinePhase={} gantry={} active={} energy={}",
+                phase, machinePhase, gantrySubstate, active, energy.amount);
         clearActiveMiningTarget();
         returnPhase = phase;
-        suppressGantryDuringReturn = frameWorkPending || topLaserPhase;
+        machinePhase = (phase == ReturnPhase.FINISHING) ? MachinePhase.FINISH : MachinePhase.STOPPING;
+        gantrySubstate = GantrySubstate.TRAVEL;
         active = false;
         frameWorkBudget = 0.0;
         miningBudget = Math.min(miningBudget, 1.0);
@@ -1781,6 +2526,9 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private void stepReturnToOrigin(ServerWorld sw) {
+        if (machinePhase == MachinePhase.GANTRY_MINE && returnPhase != ReturnPhase.NONE) {
+            gantrySubstate = GantrySubstate.TRAVEL;
+        }
         Vec3d origin = getToolHeadOriginPos();
         double distance = getToolHeadPos().distanceTo(origin);
         if (distance > 1.0E-6 && miningBudget > 1.0E-6) {
@@ -1795,17 +2543,25 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         miningBudget = 0.0;
         ReturnPhase completedPhase = returnPhase;
         returnPhase = ReturnPhase.NONE;
-        suppressGantryDuringReturn = false;
         clearActiveMiningTarget();
 
         if (completedPhase == ReturnPhase.FINISHING) {
-            stopAndRemoveFrame();
+            machinePhase = MachinePhase.FINISH;
+            gantrySubstate = GantrySubstate.TRAVEL;
+            finishEndpointTask = true;
+            clearStatusMessage();
+            updateStatusState(sw);
+            debugLog("return complete FINISH gantry at origin");
             return;
         }
 
+        machinePhase = MachinePhase.IDLE;
+        laserSubstate = LaserSubstate.NONE;
+        gantrySubstate = GantrySubstate.TRAVEL;
         clearStatusMessage();
         ChunkTickets.clearTickets(sw, pos, this);
         updateStatusState(sw);
+        debugLog("return complete STOPPING -> IDLE gantry kept rendered");
     }
 
     private void normalizeFrameProgress(ServerWorld sw) {
@@ -1824,26 +2580,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (!active || !areaLocked) return 0L;
         if (cachedFrame == null) cachedFrame = computeFrame();
         if (frameIndex < cachedFrame.size() || !pendingFrameRepairs.isEmpty()) return ModConfig.DATA.energyPerFrame;
-
-        BlockPos rediscoveredTarget = null;
-        if (drainRediscoveryQueue) {
-            rediscoveredTarget = peekInsetRediscoveryTarget(sw);
-            if (rediscoveredTarget == null) {
-                rediscoveredTarget = peekRediscoveryTarget(sw);
-            }
-        }
-        if (rediscoveredTarget != null) {
-            BlockState nextState = sw.getBlockState(rediscoveredTarget);
-            float hardness = nextState.getHardness(sw, rediscoveredTarget);
-            return ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
-        }
-
-        BlockPos nextTarget = getNextMineableTarget(sw);
-        if (nextTarget == null) return 0L;
-
-        BlockState nextState = sw.getBlockState(nextTarget);
-        float hardness = nextState.getHardness(sw, nextTarget);
-        return ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
+        return getRequiredEnergyForMiningPhase(sw);
     }
 
     @Nullable
@@ -1860,8 +2597,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             int topY = findHighestMineableY(sw);
             if (topY == Integer.MIN_VALUE) return null;
             peekLayerY = topY;
-            peekCursorX = minX + 1;
-            peekCursorZ = minZ + 1;
+            peekCursorX = traversalMinXForLayer(topY);
+            peekCursorZ = traversalMinZForLayer(topY);
             peekXForward = true;
             peekZForward = true;
         }
@@ -1869,7 +2606,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         int bottom = sw.getBottomY();
         while (peekLayerY >= bottom) {
             BlockPos target = new BlockPos(peekCursorX, peekLayerY, peekCursorZ);
-            if (isMineableTarget(sw, target, sw.getBlockState(target))) return target;
+            if (isMineableTraversalTarget(sw, target, sw.getBlockState(target))) return target;
             CursorState advanced = advanceCursor(peekCursorX, peekLayerY, peekCursorZ, peekXForward, peekZForward);
             peekCursorX = advanced.x;
             peekLayerY = advanced.y;
@@ -1945,6 +2682,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         cachedFrame = null;
         cachedFrameRemoval = null;
         cachedFrameLookup = null;
+        initFrameBuildComplete = false;
         pendingFrameRepairs.clear();
         lastFrameCheckLayerY = Integer.MIN_VALUE;
         nextFrameIntegrityCheckTick = 0L;
@@ -1956,7 +2694,10 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         clearRediscoveryState();
         clearMiningTravelState();
         areaLocked = false;
-        finished = true;
+        finishEndpointTask = true;
+        machinePhase = MachinePhase.FINISH;
+        laserSubstate = LaserSubstate.NONE;
+        gantrySubstate = GantrySubstate.TRAVEL;
         clearStatusMessage();
         updateStatusState(sw);
         markDirty();
@@ -1985,13 +2726,15 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         requiredEnergyForNextOp = getRequiredEnergyForNextOperation(sw);
         insufficientEnergyForNextOp = (active || frameRemovalActive) && requiredEnergyForNextOp > 0L && energy.amount < requiredEnergyForNextOp;
 
-        if (finished) {
+        if (machinePhase == MachinePhase.NO_POWER) {
+            statusState = StatusState.NO_POWER;
+        } else if (finishEndpointTask || machinePhase == MachinePhase.FINISH) {
             statusState = StatusState.FINISHED;
         } else if (insufficientEnergyForNextOp) {
             statusState = StatusState.NO_POWER;
         } else if (frameRemovalActive) {
             statusState = StatusState.ACTIVE;
-        } else if (active && (frameIndex < cachedFrameSize(sw) || !pendingFrameRepairs.isEmpty())) {
+        } else if (machinePhase == MachinePhase.FRAME_REPAIR || (active && machinePhase == MachinePhase.FRAME_REPAIR)) {
             statusState = StatusState.REPAIRING;
         } else if (active) {
             statusState = StatusState.ACTIVE;
@@ -2010,20 +2753,52 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private RenderChannelPhase determineRenderChannelPhase() {
         if (debugForcedRenderPhase != null) return debugForcedRenderPhase;
         if (debugVisualPreview && canShowDebugPreview()) return RenderChannelPhase.DEBUG_PREVIEW;
-        if (!areaLocked) return RenderChannelPhase.NONE;
-        if (isFrameWorkActiveClient()) return RenderChannelPhase.FRAME_WORK;
-        if (shouldUseTopLaserClient()) return RenderChannelPhase.TOP_LASER;
-        if (suppressGantryDuringReturn) return RenderChannelPhase.SUPPRESSED_RETURN;
-        if (active || returnPhase != ReturnPhase.NONE || frameRemovalActive || shouldRenderPausedGantryClient()) {
-            return RenderChannelPhase.GANTRY;
+        if (machinePhase == MachinePhase.NO_POWER) {
+            if (laserSubstate == LaserSubstate.LASER_MINE_IDLE && areaLocked) return RenderChannelPhase.RENDER_LASER_IDLE;
+            if (gantrySubstate == GantrySubstate.FREEZE && areaLocked) return RenderChannelPhase.RENDER_GANTRY_FREEZE;
+            return RenderChannelPhase.RENDER_NONE;
         }
-        return RenderChannelPhase.NONE;
+
+        return switch (machinePhase) {
+            case BUILD_FRAME, FRAME_REPAIR -> areaLocked ? RenderChannelPhase.RENDER_FRAME_WORK : RenderChannelPhase.RENDER_NONE;
+            case LASER_MINE -> areaLocked ? RenderChannelPhase.RENDER_LASER_ACTIVE : RenderChannelPhase.RENDER_NONE;
+            case REMOVE_FRAME -> areaLocked ? RenderChannelPhase.RENDER_REMOVE_FRAME : RenderChannelPhase.RENDER_NONE;
+            case GANTRY_MINE, STOPPING -> areaLocked ? renderChannelForGantrySubstate(gantrySubstate) : RenderChannelPhase.RENDER_NONE;
+            case FINISH -> {
+                if (!areaLocked) yield RenderChannelPhase.RENDER_NONE;
+                yield gantrySubstate == GantrySubstate.TRAVEL
+                        ? RenderChannelPhase.RENDER_GANTRY_TRAVEL
+                        : RenderChannelPhase.RENDER_FINISH_HOME;
+            }
+            case IDLE -> {
+                if (!areaLocked) yield RenderChannelPhase.RENDER_NONE;
+                if (laserSubstate == LaserSubstate.LASER_MINE_IDLE) yield RenderChannelPhase.RENDER_LASER_IDLE;
+                yield renderChannelForGantrySubstate(gantrySubstate);
+            }
+            default -> RenderChannelPhase.RENDER_NONE;
+        };
+    }
+
+    private RenderChannelPhase renderChannelForGantrySubstate(GantrySubstate substate) {
+        return switch (substate) {
+            case MINE -> RenderChannelPhase.RENDER_GANTRY_MINE;
+            case TRAVEL -> RenderChannelPhase.RENDER_GANTRY_TRAVEL;
+            case FREEZE -> RenderChannelPhase.RENDER_GANTRY_FREEZE;
+            case NONE -> RenderChannelPhase.RENDER_NONE;
+        };
     }
 
     private void updateRenderChannelState(ServerWorld sw) {
         RenderChannelPhase nextPhase = determineRenderChannelPhase();
         long now = sw.getTime();
         if (nextPhase != renderChannelPhase) {
+            boolean shortGantryRenderToggle = machinePhase == MachinePhase.GANTRY_MINE
+                    && ((renderChannelPhase == RenderChannelPhase.RENDER_GANTRY_MINE && nextPhase == RenderChannelPhase.RENDER_GANTRY_TRAVEL)
+                    || (renderChannelPhase == RenderChannelPhase.RENDER_GANTRY_TRAVEL && nextPhase == RenderChannelPhase.RENDER_GANTRY_MINE));
+            if (!shortGantryRenderToggle) {
+                debugLog("render phase {} -> {} at tick={} machinePhase={} laser={} gantry={} return={}",
+                        renderChannelPhase, nextPhase, now, machinePhase, laserSubstate, gantrySubstate, returnPhase);
+            }
             renderChannelPhase = nextPhase;
             renderChannelPhaseStartedTick = now;
         }
@@ -2045,6 +2820,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private void syncState() {
         if (world instanceof ServerWorld sw) {
             updateRenderChannelState(sw);
+            debugLogStateSnapshotChanges();
             markDirty();
             BlockState state = sw.getBlockState(pos);
             sw.updateListeners(pos, state, state, Block.NOTIFY_ALL);
@@ -2151,53 +2927,72 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     // Client render helper
     public boolean isActiveClient() { return active; }
-    public boolean isNoPowerClient() { return statusState == StatusState.NO_POWER; }
+    public boolean isNoPowerClient() { return machinePhase == MachinePhase.NO_POWER || statusState == StatusState.NO_POWER; }
     public boolean shouldForceHomeGantryClient() {
-        return statusState == StatusState.NO_POWER
-                || returnPhase != ReturnPhase.NONE
-                || (!active && !frameRemovalActive);
+        if (returnPhase != ReturnPhase.NONE) return false;
+        if (gantrySubstate == GantrySubstate.TRAVEL || gantrySubstate == GantrySubstate.FREEZE) return false;
+        if (machinePhase == MachinePhase.FINISH) return false;
+        return !active && !frameRemovalActive;
     }
 
     public int getFrameTopY() { return maxY; }
 
     public String getDisplayStatus() {
         String key = switch (statusState) {
-            case ACTIVE -> "gui.quarry_reforged.status.active";
             case NO_POWER -> "gui.quarry_reforged.status.no_power";
             case REPAIRING -> "gui.quarry_reforged.status.repairing";
             case FINISHED -> "gui.quarry_reforged.status.finished";
-            default -> "gui.quarry_reforged.status.idle";
+            case ACTIVE -> "gui.quarry_reforged.status.active";
+            case IDLE -> "gui.quarry_reforged.status.idle";
         };
         return Text.translatable(key).getString();
     }
 
     public String getDisplayStatusMessage() {
-        if (statusState == StatusState.NO_POWER) {
+        if (machinePhase == MachinePhase.NO_POWER || statusState == StatusState.NO_POWER) {
             return Text.translatable("gui.quarry_reforged.status.message.no_power", energy.amount, requiredEnergyForNextOp).getString();
         }
         if (isPausedByRedstoneClient()) {
             return Text.translatable("gui.quarry_reforged.status.message.redstone_paused").getString();
         }
         if (!statusMessage.isEmpty()) return Text.translatable(statusMessage).getString();
-        if (returnPhase == ReturnPhase.STOPPING) {
-            return Text.translatable("gui.quarry_reforged.status.message.stopping").getString();
+        if (machinePhase == MachinePhase.STOPPING || returnPhase == ReturnPhase.STOPPING) {
+            return Text.translatable("gui.quarry_reforged.status.message.phase.stopping").getString();
         }
-        if (returnPhase == ReturnPhase.FINISHING) {
-            return Text.translatable("gui.quarry_reforged.status.message.returning_finished").getString();
+        if (machinePhase == MachinePhase.FINISH || returnPhase == ReturnPhase.FINISHING) {
+            return Text.translatable("gui.quarry_reforged.status.message.phase.finish").getString();
         }
-        if (frameRemovalActive) {
-            return Text.translatable("gui.quarry_reforged.status.message.removing_frame").getString();
-        }
-        return switch (statusState) {
-            case REPAIRING -> Text.translatable(
-                    isInitialFrameBuildInProgress()
-                            ? "gui.quarry_reforged.status.message.building"
-                            : "gui.quarry_reforged.status.message.repairing"
-            ).getString();
-            case ACTIVE -> Text.translatable("gui.quarry_reforged.status.message.active", String.format(java.util.Locale.ROOT, "%.2f", getBlocksPerSecond())).getString();
-            case FINISHED -> Text.translatable("gui.quarry_reforged.status.message.finished").getString();
+        return switch (machinePhase) {
+            case BUILD_FRAME -> Text.translatable("gui.quarry_reforged.status.message.phase.build_frame").getString();
+            case FRAME_REPAIR -> Text.translatable("gui.quarry_reforged.status.message.phase.frame_repair").getString();
+            case REMOVE_FRAME -> Text.translatable("gui.quarry_reforged.status.message.phase.remove_frame").getString();
+            case LASER_MINE -> switch (laserSubstate) {
+                case LASER_CLEAR_FRAME_AREA -> Text.translatable("gui.quarry_reforged.status.message.phase.laser_mine.clear_frame_area").getString();
+                case LASER_MINE_REDISCOVERY -> Text.translatable("gui.quarry_reforged.status.message.phase.laser_mine.rediscovery").getString();
+                case LASER_MINE_IDLE -> Text.translatable("gui.quarry_reforged.status.message.phase.laser_mine.idle").getString();
+                case NONE -> Text.translatable("gui.quarry_reforged.status.message.phase.laser_mine").getString();
+            };
+            case GANTRY_MINE -> switch (gantrySubstate) {
+                case MINE -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine.mine", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
+                case TRAVEL -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine.travel", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
+                case FREEZE -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine.freeze", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
+                case NONE -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
+            };
+            case STOPPING -> Text.translatable("gui.quarry_reforged.status.message.phase.stopping").getString();
+            case FINISH -> Text.translatable("gui.quarry_reforged.status.message.phase.finish").getString();
+            case NO_POWER -> Text.translatable("gui.quarry_reforged.status.message.no_power", energy.amount, requiredEnergyForNextOp).getString();
             default -> Text.translatable("gui.quarry_reforged.status.message.idle").getString();
         };
+    }
+
+    private double getCurrentGantryEnergyPerTick() {
+        if (machinePhase != MachinePhase.GANTRY_MINE) return 0.0;
+        if (gantrySubstate != GantrySubstate.MINE) return 0.0;
+        return Math.max(0.0, requiredEnergyForNextOp * getBlocksPerTick());
+    }
+
+    private String formatEnergyPerTick(double value) {
+        return String.format(java.util.Locale.ROOT, "%.2f", value);
     }
 
     public int getDisplayStatusColor() {
@@ -2226,12 +3021,16 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     public boolean canToggleActiveClient() {
+        if (machinePhase == MachinePhase.NO_POWER) return false;
+        if (machinePhase == MachinePhase.FINISH || finishEndpointTask) return false;
         if (returnPhase != ReturnPhase.NONE) return false;
         if (active || frameRemovalActive) return true;
         return isRedstoneConditionMetForControlClient();
     }
 
     public boolean canRemoveFrameClient() {
+        if (machinePhase == MachinePhase.NO_POWER) return false;
+        if (machinePhase == MachinePhase.FINISH || finishEndpointTask) return areaLocked;
         return canStartFrameRemovalClient() && isRedstoneConditionMetForControlClient();
     }
 
@@ -2288,10 +3087,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             activeTargetType = WorkType.values()[activeMiningTargetType].name();
         }
 
-        BlockPos gantryQueueHead = firstValidQueuedTarget(sw, pendingRediscoveryTargets);
-        BlockPos laserQueueHead = firstValidQueuedTarget(sw, pendingInsetRediscoveryTargets);
-        int gantryQueueValid = countValidQueuedTargets(sw, pendingRediscoveryTargets);
-        int laserQueueValid = countValidQueuedTargets(sw, pendingInsetRediscoveryTargets);
+        BlockPos rediscoveryQueueHead = firstValidQueuedTarget(sw, pendingRediscoveryTargets);
+        int rediscoveryQueueValid = countValidQueuedTargets(sw, pendingRediscoveryTargets);
 
         return new RediscoveryDebugSnapshot(
                 active,
@@ -2301,12 +3098,19 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 finalRediscoverySweepDone,
                 rediscoveryLayerY,
                 nextRediscoveryScanTick,
+                machinePhase.name(),
+                laserSubstate.name(),
+                gantrySubstate.name(),
+                returnPhase.name(),
+                renderChannelPhase.name(),
+                rediscoveryLaserVerticalTravelActive,
+                rediscoveryCallerActive,
+                rediscoveryCallerPhase.name(),
+                rediscoveryCallerLaserSubstate.name(),
+                rediscoveryCallerGantrySubstate.name(),
                 pendingRediscoveryTargets.size(),
-                gantryQueueValid,
-                gantryQueueHead,
-                pendingInsetRediscoveryTargets.size(),
-                laserQueueValid,
-                laserQueueHead,
+                rediscoveryQueueValid,
+                rediscoveryQueueHead,
                 activeTargetPos,
                 activeTargetType
         );
@@ -2343,7 +3147,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     public boolean shouldRenderPausedGantryClient() {
         if (!areaLocked) return false;
         if (active || frameRemovalActive || returnPhase != ReturnPhase.NONE) return false;
-        if (finished) return false;
+        if (finishEndpointTask || machinePhase == MachinePhase.FINISH) return false;
         if (hasPendingFrameWorkClient()) return false;
         if (isFrameWorkActiveClient()) return false;
         if (shouldUseTopLaserClient()) return false;
@@ -2391,7 +3195,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     public int getProgressLayerCurrent() {
         int total = getProgressLayerTotal();
         if (total <= 0) return 0;
-        if (finished) return total;
+        if (finishEndpointTask || machinePhase == MachinePhase.FINISH) return total;
         if (layerY == Integer.MIN_VALUE) return 0;
 
         int referenceY = minY - 1;
@@ -2452,15 +3256,46 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     public boolean shouldUseTopLaserClient() {
         if (!areaLocked) return false;
-        if (frameRemovalActive) return true;
-        if (!active) return false;
-        if (activeMiningTargetType == WorkType.REDISCOVERY_INSET.ordinal()) {
-            return true;
+        if (machinePhase == MachinePhase.LASER_MINE || machinePhase == MachinePhase.REMOVE_FRAME) return true;
+        if ((machinePhase == MachinePhase.NO_POWER || machinePhase == MachinePhase.IDLE)
+                && laserSubstate == LaserSubstate.LASER_MINE_IDLE) return true;
+        return false;
+    }
+
+    public boolean isRediscoveryDrainActiveClient() {
+        return active && drainRediscoveryQueue;
+    }
+
+    public boolean isRediscoveryLaserVerticalTravelActiveClient() {
+        return rediscoveryLaserVerticalTravelActive;
+    }
+
+    public Vec3d getClientLaserCubeWorldPos() {
+        Vec3d origin = getToolHeadOriginPos();
+        if (activeMiningTargetPacked == 0L || activeMiningTargetType < 0 || activeMiningTargetType >= WorkType.values().length) {
+            return origin;
         }
-        if (drainRediscoveryQueue && !pendingInsetRediscoveryTargets.isEmpty()) {
-            return true;
+
+        WorkType type = WorkType.values()[activeMiningTargetType];
+        if (type != WorkType.REDISCOVERY && type != WorkType.REDISCOVERY_INSET) {
+            return origin;
         }
-        return layerY != Integer.MIN_VALUE && layerY >= minY;
+
+        BlockPos target = BlockPos.fromLong(activeMiningTargetPacked);
+        double cubeX = Double.isNaN(laserCubeTravelX) ? (target.getX() + 0.5) : laserCubeTravelX;
+        double cubeY = Double.isNaN(laserCubeTravelY)
+                ? (target.getY() + 0.5 + REDISCOVERY_LASER_TARGET_Y_OFFSET)
+                : laserCubeTravelY;
+        double cubeZ = Double.isNaN(laserCubeTravelZ) ? (target.getZ() + 0.5) : laserCubeTravelZ;
+        return new Vec3d(cubeX, cubeY, cubeZ);
+    }
+
+    public static void setAutoExportDebugLogging(boolean enabled) {
+        autoExportDebugLogging = enabled;
+    }
+
+    public static boolean isAutoExportDebugLogging() {
+        return autoExportDebugLogging;
     }
 
     public boolean isFrameWorkActiveClient() {
@@ -2486,11 +3321,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private boolean canStartFrameRemovalClient() {
-        return areaLocked
-                && !active
-                && !frameRemovalActive
-                && returnPhase == ReturnPhase.NONE
-                && statusState == StatusState.IDLE;
+        if (!areaLocked || active || frameRemovalActive || returnPhase != ReturnPhase.NONE) return false;
+        return statusState == StatusState.IDLE || statusState == StatusState.FINISHED || machinePhase == MachinePhase.FINISH;
     }
 
     private boolean canStartFrameRemoval(ServerWorld sw) {
@@ -2540,6 +3372,15 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         }
     }
 
+    private static <E extends Enum<E>> E readEnumOrDefault(NbtCompound nbt, String key, Class<E> enumClass, E fallback) {
+        if (!nbt.contains(key)) return fallback;
+        try {
+            return Enum.valueOf(enumClass, nbt.getString(key));
+        } catch (IllegalArgumentException ex) {
+            return fallback;
+        }
+    }
+
     @Override
     protected void writeNbt(NbtCompound nbt) {
         super.writeNbt(nbt);
@@ -2549,6 +3390,23 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (owner != null) nbt.putUuid("Owner", owner);
 
         nbt.putBoolean("Active", active);
+        nbt.putString("MachinePhase", machinePhase.name());
+        nbt.putString("LaserSubstate", laserSubstate.name());
+        nbt.putString("GantrySubstate", gantrySubstate.name());
+        nbt.putBoolean("HasResumeState", hasResumeState);
+        nbt.putString("ResumePhase", resumePhase.name());
+        nbt.putString("ResumeLaserSubstate", resumeLaserSubstate.name());
+        nbt.putString("ResumeGantrySubstate", resumeGantrySubstate.name());
+        nbt.putBoolean("RediscoveryCallerActive", rediscoveryCallerActive);
+        nbt.putString("RediscoveryCallerPhase", rediscoveryCallerPhase.name());
+        nbt.putString("RediscoveryCallerLaserSubstate", rediscoveryCallerLaserSubstate.name());
+        nbt.putString("RediscoveryCallerGantrySubstate", rediscoveryCallerGantrySubstate.name());
+        nbt.putBoolean("FrameRepairCallerActive", frameRepairCallerActive);
+        nbt.putString("FrameRepairCallerPhase", frameRepairCallerPhase.name());
+        nbt.putString("FrameRepairCallerLaserSubstate", frameRepairCallerLaserSubstate.name());
+        nbt.putString("FrameRepairCallerGantrySubstate", frameRepairCallerGantrySubstate.name());
+        nbt.putInt("FreezeMask", encodeFreezeMask());
+        nbt.putString("GantrySubstateBeforeFreeze", gantrySubstateBeforeFreeze.name());
         nbt.putInt("Mode", mode.ordinal());
         nbt.putString("RedstoneMode", redstoneMode.name());
         nbt.putBoolean("AutoExportEnabled", autoExportEnabled);
@@ -2565,6 +3423,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         nbt.putInt("FrameClearanceIndex", frameClearanceIndex);
         nbt.putInt("FrameIndex", frameIndex);
+        nbt.putBoolean("InitFrameBuildComplete", initFrameBuildComplete);
         nbt.putBoolean("FrameRemovalActive", frameRemovalActive);
         nbt.putInt("FrameRemovalIndex", frameRemovalIndex);
         nbt.putInt("LastFrameCheckLayerY", lastFrameCheckLayerY);
@@ -2586,9 +3445,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         nbt.putLong("ActiveMiningTarget", activeMiningTargetPacked);
         nbt.putInt("ActiveMiningTargetType", activeMiningTargetType);
         nbt.putString("ReturnPhase", returnPhase.name());
-        nbt.putBoolean("SuppressGantryDuringReturn", suppressGantryDuringReturn);
         nbt.putBoolean("FinalRediscoverySweepDone", finalRediscoverySweepDone);
-        nbt.putBoolean("Finished", finished);
+        nbt.putBoolean("FinishEndpointTask", finishEndpointTask);
         nbt.putString("StatusState", statusState.name());
         nbt.putBoolean("InsufficientEnergyForNextOp", insufficientEnergyForNextOp);
         nbt.putLong("RequiredEnergyForNextOp", requiredEnergyForNextOp);
@@ -2615,6 +3473,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         nbt.putDouble("ToolHeadX", toolHeadX);
         nbt.putDouble("ToolHeadY", toolHeadY);
         nbt.putDouble("ToolHeadZ", toolHeadZ);
+        nbt.putBoolean("RediscoveryLaserVerticalTravelActive", rediscoveryLaserVerticalTravelActive);
+        nbt.putDouble("LaserCubeTravelX", laserCubeTravelX);
+        nbt.putDouble("LaserCubeTravelY", laserCubeTravelY);
+        nbt.putDouble("LaserCubeTravelZ", laserCubeTravelZ);
+        nbt.putDouble("RediscoveryServerVolumeOriginY", rediscoveryServerVolumeOriginY);
     }
 
     @Override
@@ -2632,6 +3495,26 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (nbt.containsUuid("Owner")) owner = nbt.getUuid("Owner");
 
         active = nbt.getBoolean("Active");
+        machinePhase = readEnumOrDefault(nbt, "MachinePhase", MachinePhase.class, MachinePhase.NO_POWER);
+        laserSubstate = readEnumOrDefault(nbt, "LaserSubstate", LaserSubstate.class, LaserSubstate.NONE);
+        gantrySubstate = readEnumOrDefault(nbt, "GantrySubstate", GantrySubstate.class, GantrySubstate.NONE);
+        hasResumeState = nbt.getBoolean("HasResumeState");
+        resumePhase = readEnumOrDefault(nbt, "ResumePhase", MachinePhase.class, MachinePhase.IDLE);
+        resumeLaserSubstate = readEnumOrDefault(nbt, "ResumeLaserSubstate", LaserSubstate.class, LaserSubstate.NONE);
+        resumeGantrySubstate = readEnumOrDefault(nbt, "ResumeGantrySubstate", GantrySubstate.class, GantrySubstate.NONE);
+        rediscoveryCallerActive = nbt.getBoolean("RediscoveryCallerActive");
+        rediscoveryCallerPhase = readEnumOrDefault(nbt, "RediscoveryCallerPhase", MachinePhase.class, MachinePhase.IDLE);
+        rediscoveryCallerLaserSubstate = readEnumOrDefault(nbt, "RediscoveryCallerLaserSubstate", LaserSubstate.class, LaserSubstate.NONE);
+        rediscoveryCallerGantrySubstate = readEnumOrDefault(nbt, "RediscoveryCallerGantrySubstate", GantrySubstate.class, GantrySubstate.NONE);
+        frameRepairCallerActive = nbt.getBoolean("FrameRepairCallerActive");
+        frameRepairCallerPhase = readEnumOrDefault(nbt, "FrameRepairCallerPhase", MachinePhase.class, MachinePhase.IDLE);
+        frameRepairCallerLaserSubstate = readEnumOrDefault(nbt, "FrameRepairCallerLaserSubstate", LaserSubstate.class, LaserSubstate.NONE);
+        frameRepairCallerGantrySubstate = readEnumOrDefault(nbt, "FrameRepairCallerGantrySubstate", GantrySubstate.class, GantrySubstate.NONE);
+        decodeFreezeMask(nbt.getInt("FreezeMask"));
+        gantrySubstateBeforeFreeze = readEnumOrDefault(nbt, "GantrySubstateBeforeFreeze", GantrySubstate.class, GantrySubstate.NONE);
+        if (!nbt.contains("MachinePhase")) {
+            machinePhase = inferMachinePhaseFromRuntime();
+        }
         mode = Mode.values()[MathHelper.clamp(nbt.getInt("Mode"), 0, Mode.values().length - 1)];
         if (nbt.contains("RedstoneMode")) {
             try {
@@ -2657,6 +3540,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         frameClearanceIndex = nbt.getInt("FrameClearanceIndex");
         frameIndex = nbt.getInt("FrameIndex");
+        initFrameBuildComplete = nbt.getBoolean("InitFrameBuildComplete");
         frameRemovalActive = nbt.getBoolean("FrameRemovalActive");
         frameRemovalIndex = nbt.contains("FrameRemovalIndex") ? nbt.getInt("FrameRemovalIndex") : -1;
         lastFrameCheckLayerY = nbt.getInt("LastFrameCheckLayerY");
@@ -2679,9 +3563,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         activeMiningTargetType = nbt.contains("ActiveMiningTargetType") ? nbt.getInt("ActiveMiningTargetType") : -1;
         String storedReturnPhase = nbt.contains("ReturnPhase") ? nbt.getString("ReturnPhase") : ReturnPhase.NONE.name();
         returnPhase = ReturnPhase.valueOf(storedReturnPhase);
-        suppressGantryDuringReturn = nbt.getBoolean("SuppressGantryDuringReturn");
         finalRediscoverySweepDone = nbt.getBoolean("FinalRediscoverySweepDone");
-        finished = nbt.getBoolean("Finished");
+        finishEndpointTask = nbt.contains("FinishEndpointTask") ? nbt.getBoolean("FinishEndpointTask") : nbt.getBoolean("Finished");
         String storedStatusState = nbt.contains("StatusState") ? nbt.getString("StatusState") : StatusState.IDLE.name();
         statusState = StatusState.valueOf(storedStatusState);
         insufficientEnergyForNextOp = nbt.getBoolean("InsufficientEnergyForNextOp");
@@ -2692,7 +3575,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         debugVisualPreview = nbt.getBoolean("DebugVisualPreview");
         if (nbt.getBoolean("DebugHasForcedRenderPhase") && nbt.contains("DebugForcedRenderPhase")) {
             try {
-                debugForcedRenderPhase = RenderChannelPhase.valueOf(nbt.getString("DebugForcedRenderPhase"));
+                String forced = nbt.getString("DebugForcedRenderPhase");
+                debugForcedRenderPhase = RenderChannelPhase.valueOf(forced);
             } catch (IllegalArgumentException ignored) {
                 debugForcedRenderPhase = null;
             }
@@ -2702,11 +3586,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         debugFreezeAnimation = nbt.getBoolean("DebugFreezeAnimation");
         debugFrozenAnimationTick = nbt.getLong("DebugFrozenAnimationTick");
         debugInterpolationEnabled = !nbt.contains("DebugInterpolationEnabled") || nbt.getBoolean("DebugInterpolationEnabled");
-        String storedRenderChannelPhase = nbt.contains("RenderChannelPhase") ? nbt.getString("RenderChannelPhase") : RenderChannelPhase.NONE.name();
+        String storedRenderChannelPhase = nbt.contains("RenderChannelPhase") ? nbt.getString("RenderChannelPhase") : RenderChannelPhase.RENDER_NONE.name();
         try {
             renderChannelPhase = RenderChannelPhase.valueOf(storedRenderChannelPhase);
         } catch (IllegalArgumentException ignored) {
-            renderChannelPhase = RenderChannelPhase.NONE;
+            renderChannelPhase = RenderChannelPhase.RENDER_NONE;
         }
         renderChannelPhaseStartedTick = nbt.getLong("RenderChannelPhaseStartedTick");
         renderChannelStateTick = nbt.getLong("RenderChannelStateTick");
@@ -2719,6 +3603,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         toolHeadX = nbt.contains("ToolHeadX") ? nbt.getDouble("ToolHeadX") : Double.NaN;
         toolHeadY = nbt.contains("ToolHeadY") ? nbt.getDouble("ToolHeadY") : Double.NaN;
         toolHeadZ = nbt.contains("ToolHeadZ") ? nbt.getDouble("ToolHeadZ") : Double.NaN;
+        rediscoveryLaserVerticalTravelActive = nbt.getBoolean("RediscoveryLaserVerticalTravelActive");
+        laserCubeTravelX = nbt.contains("LaserCubeTravelX") ? nbt.getDouble("LaserCubeTravelX") : Double.NaN;
+        laserCubeTravelY = nbt.contains("LaserCubeTravelY") ? nbt.getDouble("LaserCubeTravelY") : Double.NaN;
+        laserCubeTravelZ = nbt.contains("LaserCubeTravelZ") ? nbt.getDouble("LaserCubeTravelZ") : Double.NaN;
+        rediscoveryServerVolumeOriginY = nbt.contains("RediscoveryServerVolumeOriginY")
+                ? nbt.getDouble("RediscoveryServerVolumeOriginY")
+                : Double.NaN;
     }
 
     @Nullable
@@ -2735,8 +3626,23 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     public enum Mode { BUFFER, EXPORT }
+    public enum MachinePhase { NO_POWER, IDLE, BUILD_FRAME, LASER_MINE, GANTRY_MINE, FRAME_REPAIR, REMOVE_FRAME, STOPPING, FINISH }
+    public enum LaserSubstate { NONE, LASER_CLEAR_FRAME_AREA, LASER_MINE_REDISCOVERY, LASER_MINE_IDLE }
+    public enum GantrySubstate { NONE, MINE, TRAVEL, FREEZE }
+    private enum FreezeReason { REDISCOVERY, FRAME_REPAIR, NO_POWER }
     public enum StatusState { IDLE, ACTIVE, REPAIRING, NO_POWER, FINISHED }
-    public enum RenderChannelPhase { NONE, DEBUG_PREVIEW, FRAME_WORK, TOP_LASER, SUPPRESSED_RETURN, GANTRY }
+    public enum RenderChannelPhase {
+        RENDER_NONE,
+        DEBUG_PREVIEW,
+        RENDER_FRAME_WORK,
+        RENDER_LASER_ACTIVE,
+        RENDER_LASER_IDLE,
+        RENDER_GANTRY_MINE,
+        RENDER_GANTRY_TRAVEL,
+        RENDER_GANTRY_FREEZE,
+        RENDER_FINISH_HOME,
+        RENDER_REMOVE_FRAME
+    }
     public record RediscoveryDebugSnapshot(
             boolean active,
             boolean areaLocked,
@@ -2745,17 +3651,25 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             boolean finalRediscoverySweepDone,
             int rediscoveryLayerY,
             long nextRediscoveryScanTick,
-            int gantryQueueRawSize,
-            int gantryQueueValidSize,
-            @Nullable BlockPos gantryQueueHead,
-            int laserQueueRawSize,
-            int laserQueueValidSize,
-            @Nullable BlockPos laserQueueHead,
+            String machinePhase,
+            String laserSubstate,
+            String gantrySubstate,
+            String returnPhase,
+            String renderChannelPhase,
+            boolean rediscoveryLaserVerticalTravelActive,
+            boolean rediscoveryCallerActive,
+            String rediscoveryCallerPhase,
+            String rediscoveryCallerLaserSubstate,
+            String rediscoveryCallerGantrySubstate,
+            int rediscoveryQueueRawSize,
+            int rediscoveryQueueValidSize,
+            @Nullable BlockPos rediscoveryQueueHead,
             @Nullable BlockPos activeTargetPos,
             @Nullable String activeTargetType
     ) {}
     private enum ReturnPhase { NONE, STOPPING, FINISHING }
     private enum WorkType { FRAME_PLACE, FRAME_REPAIR, FRAME_CLEARANCE, FRAME_REMOVE, MINE, REDISCOVERY, REDISCOVERY_INSET }
+    private record RediscoveryServerVolume(double minX, double maxX, double minY, double maxY, double minZ, double maxZ) {}
 
     private record EntityInventoryDrop(Entity entity, List<ItemStack> drops) {
         private void removeSource() {
@@ -2962,6 +3876,12 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             }
             if (changed) markDirty();
             return ops;
+        }
+
+        public long totalItemCount() {
+            long total = 0;
+            for (ItemStack stack : items) total += stack.getCount();
+            return total;
         }
     }
 }

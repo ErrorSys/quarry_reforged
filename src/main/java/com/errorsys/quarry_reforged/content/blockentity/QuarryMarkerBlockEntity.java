@@ -15,6 +15,8 @@ import java.util.List;
 
 public class QuarryMarkerBlockEntity extends BlockEntity {
     private boolean previewActive = false;
+    private boolean invalidCardinalPreviewActive = false;
+    private int invalidCardinalRange = 0;
     private long originPacked = 0L;
     private int minX;
     private int maxX;
@@ -34,6 +36,8 @@ public class QuarryMarkerBlockEntity extends BlockEntity {
                            int minZ, int maxZ,
                            List<BlockPos> linkedMarkers) {
         this.previewActive = true;
+        this.invalidCardinalPreviewActive = false;
+        this.invalidCardinalRange = 0;
         this.originPacked = origin.asLong();
         this.minX = minX;
         this.maxX = maxX;
@@ -46,15 +50,36 @@ public class QuarryMarkerBlockEntity extends BlockEntity {
     }
 
     public void clearPreview() {
-        if (!previewActive && originPacked == 0L && linkedMarkers.length == 0) return;
+        if (!previewActive && !invalidCardinalPreviewActive && invalidCardinalRange == 0 && originPacked == 0L && linkedMarkers.length == 0) return;
         previewActive = false;
+        invalidCardinalPreviewActive = false;
+        invalidCardinalRange = 0;
         originPacked = 0L;
         linkedMarkers = new long[0];
         sync();
     }
 
+    public void setInvalidCardinalPreview(int range) {
+        int clampedRange = Math.max(1, range);
+        if (invalidCardinalPreviewActive && invalidCardinalRange == clampedRange && !previewActive) return;
+        this.previewActive = false;
+        this.originPacked = 0L;
+        this.linkedMarkers = new long[0];
+        this.invalidCardinalPreviewActive = true;
+        this.invalidCardinalRange = clampedRange;
+        sync();
+    }
+
     public boolean hasPreview() {
         return previewActive;
+    }
+
+    public boolean hasInvalidCardinalPreview() {
+        return invalidCardinalPreviewActive;
+    }
+
+    public int getInvalidCardinalRange() {
+        return invalidCardinalRange;
     }
 
     public boolean isOriginMarker() {
@@ -111,6 +136,8 @@ public class QuarryMarkerBlockEntity extends BlockEntity {
     protected void writeNbt(NbtCompound nbt) {
         super.writeNbt(nbt);
         nbt.putBoolean("PreviewActive", previewActive);
+        nbt.putBoolean("InvalidCardinalPreviewActive", invalidCardinalPreviewActive);
+        nbt.putInt("InvalidCardinalRange", invalidCardinalRange);
         nbt.putLong("OriginPacked", originPacked);
         nbt.putInt("MinX", minX);
         nbt.putInt("MaxX", maxX);
@@ -125,6 +152,8 @@ public class QuarryMarkerBlockEntity extends BlockEntity {
     public void readNbt(NbtCompound nbt) {
         super.readNbt(nbt);
         previewActive = nbt.getBoolean("PreviewActive");
+        invalidCardinalPreviewActive = nbt.getBoolean("InvalidCardinalPreviewActive");
+        invalidCardinalRange = nbt.getInt("InvalidCardinalRange");
         originPacked = nbt.getLong("OriginPacked");
         minX = nbt.getInt("MinX");
         maxX = nbt.getInt("MaxX");

@@ -52,60 +52,92 @@ public final class ModCommands {
                                          net.minecraft.command.CommandRegistryAccess registryAccess,
                                          CommandManager.RegistrationEnvironment environment) {
         dispatcher.register(
-                literal("quarrydebug")
+                literal("quarry")
                         .requires(source -> source.hasPermissionLevel(2))
-                        .then(literal("preview")
-                                .then(literal("on")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPreview(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), true))))
-                                .then(literal("off")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPreview(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
-                        .then(literal("phase")
-                                .then(literal("auto")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), null, "auto"))))
-                                .then(literal("none")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.NONE, "none"))))
-                                .then(literal("debug_preview")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.DEBUG_PREVIEW, "debug_preview"))))
-                                .then(literal("frame_work")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.FRAME_WORK, "frame_work"))))
-                                .then(literal("top_laser")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.TOP_LASER, "top_laser"))))
-                                .then(literal("suppressed_return")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.SUPPRESSED_RETURN, "suppressed_return"))))
-                                .then(literal("gantry")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.GANTRY, "gantry")))))
-                        .then(literal("freeze")
-                                .then(literal("on")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setFreeze(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), true))))
-                                .then(literal("off")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setFreeze(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
-                        .then(literal("interpolation")
-                                .then(literal("on")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setInterpolation(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), true))))
-                                .then(literal("off")
-                                        .then(argument("pos", BlockPosArgumentType.blockPos())
-                                                .executes(ctx -> setInterpolation(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
-                        .then(literal("tickets")
-                                .then(argument("pos", BlockPosArgumentType.blockPos())
-                                        .executes(ctx -> debugTickets(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
-                        .then(literal("rediscovery")
-                                .then(literal("off")
-                                        .executes(ctx -> disableRediscoveryOverlay(ctx.getSource())))
-                                .then(argument("pos", BlockPosArgumentType.blockPos())
-                                        .executes(ctx -> enableRediscoveryOverlay(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
+                        .then(literal("debug")
+                                .then(literal("viz")
+                                        .then(literal("preview")
+                                                .then(literal("on")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPreview(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), true))))
+                                                .then(literal("off")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPreview(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
+                                        .then(literal("phase")
+                                                .then(literal("auto")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), null, "auto"))))
+                                                .then(literal("render_none")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_NONE, "render_none"))))
+                                                .then(literal("debug_preview")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.DEBUG_PREVIEW, "debug_preview"))))
+                                                .then(literal("render_frame_work")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_FRAME_WORK, "render_frame_work"))))
+                                                .then(literal("render_laser_active")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_LASER_ACTIVE, "render_laser_active"))))
+                                                .then(literal("render_laser_idle")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_LASER_IDLE, "render_laser_idle"))))
+                                                .then(literal("render_gantry_mine")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_GANTRY_MINE, "render_gantry_mine"))))
+                                                .then(literal("render_gantry_travel")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_GANTRY_TRAVEL, "render_gantry_travel"))))
+                                                .then(literal("render_gantry_freeze")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_GANTRY_FREEZE, "render_gantry_freeze"))))
+                                                .then(literal("render_finish_home")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_FINISH_HOME, "render_finish_home"))))
+                                                .then(literal("render_remove_frame")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setPhaseOverride(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), RenderChannelPhase.RENDER_REMOVE_FRAME, "render_remove_frame")))))
+                                        .then(literal("freeze")
+                                                .then(literal("on")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setFreeze(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), true))))
+                                                .then(literal("off")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setFreeze(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
+                                        .then(literal("interp")
+                                                .then(literal("on")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setInterpolation(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), true))))
+                                                .then(literal("off")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setInterpolation(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
+                                )
+                                .then(literal("diag")
+                                        .then(literal("tickets")
+                                                .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                        .executes(ctx -> debugTickets(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
+                                        .then(literal("rediscovery")
+                                                .then(literal("on")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> enableRediscoveryOverlay(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
+                                                .then(literal("off")
+                                                        .executes(ctx -> disableRediscoveryOverlay(ctx.getSource()))))
+                                )
+                                .then(literal("io")
+                                        .then(literal("autoexportlog")
+                                                .then(literal("on")
+                                                        .executes(ctx -> setAutoExportLog(ctx.getSource(), true)))
+                                                .then(literal("off")
+                                                        .executes(ctx -> setAutoExportLog(ctx.getSource(), false))))
+                                )
+                        )
         );
+    }
+
+    private static int setAutoExportLog(ServerCommandSource source, boolean enabled) {
+        QuarryBlockEntity.setAutoExportDebugLogging(enabled);
+        source.sendFeedback(() -> Text.literal("Quarry auto-export debug logging " + (enabled ? "enabled" : "disabled") + "."), false);
+        return Command.SINGLE_SUCCESS;
     }
 
     private static int setPreview(ServerCommandSource source, BlockPos pos, boolean enabled) {
@@ -228,7 +260,7 @@ public final class ModCommands {
 
         REDISCOVERY_OVERLAY_TARGETS.put(player.getUuid(), pos.toImmutable());
         sendRediscoveryOverlayPacket(player, quarry, world, pos);
-        source.sendFeedback(() -> Text.literal("Rediscovery overlay enabled for quarry at " + pos.toShortString() + ". Use /quarrydebug rediscovery off to disable."), false);
+        source.sendFeedback(() -> Text.literal("Rediscovery overlay enabled for quarry at " + pos.toShortString() + ". Use /quarry debug diag rediscovery off to disable."), false);
         return Command.SINGLE_SUCCESS;
     }
 
@@ -270,8 +302,6 @@ public final class ModCommands {
     private static void sendRediscoveryOverlayPacket(ServerPlayerEntity player, QuarryBlockEntity quarry, ServerWorld world, BlockPos pos) {
         RediscoveryDebugSnapshot snapshot = quarry.getRediscoveryDebugSnapshot(world);
         long ticksUntilNextScan = Math.max(0L, snapshot.nextRediscoveryScanTick() - world.getTime());
-        String phaseHint = quarry.shouldUseTopLaserClient() ? "TOP_LASER" : "GANTRY";
-        String renderPhase = quarry.getRenderChannelPhaseClient().name();
 
         PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
         buf.writeBoolean(true);
@@ -285,14 +315,19 @@ public final class ModCommands {
         buf.writeVarLong(ticksUntilNextScan);
         buf.writeString(orNone(snapshot.activeTargetType()), 64);
         writeOptionalPos(buf, snapshot.activeTargetPos());
-        buf.writeString(phaseHint, 32);
-        buf.writeString(renderPhase, 32);
-        buf.writeVarInt(snapshot.gantryQueueRawSize());
-        buf.writeVarInt(snapshot.gantryQueueValidSize());
-        writeOptionalPos(buf, snapshot.gantryQueueHead());
-        buf.writeVarInt(snapshot.laserQueueRawSize());
-        buf.writeVarInt(snapshot.laserQueueValidSize());
-        writeOptionalPos(buf, snapshot.laserQueueHead());
+        buf.writeString(snapshot.machinePhase(), 32);
+        buf.writeString(snapshot.laserSubstate(), 32);
+        buf.writeString(snapshot.gantrySubstate(), 32);
+        buf.writeString(snapshot.returnPhase(), 32);
+        buf.writeString(snapshot.renderChannelPhase(), 32);
+        buf.writeBoolean(snapshot.rediscoveryLaserVerticalTravelActive());
+        buf.writeBoolean(snapshot.rediscoveryCallerActive());
+        buf.writeString(snapshot.rediscoveryCallerPhase(), 32);
+        buf.writeString(snapshot.rediscoveryCallerLaserSubstate(), 32);
+        buf.writeString(snapshot.rediscoveryCallerGantrySubstate(), 32);
+        buf.writeVarInt(snapshot.rediscoveryQueueRawSize());
+        buf.writeVarInt(snapshot.rediscoveryQueueValidSize());
+        writeOptionalPos(buf, snapshot.rediscoveryQueueHead());
 
         ServerPlayNetworking.send(player, ModNetworking.REDISCOVERY_DEBUG_OVERLAY, buf);
     }

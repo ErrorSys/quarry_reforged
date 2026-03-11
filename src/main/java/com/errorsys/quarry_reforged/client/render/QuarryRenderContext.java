@@ -27,8 +27,11 @@ public final class QuarryRenderContext {
     private final BlockPos waypointNext;
     private final Vec3d toolHeadPos;
     private final Vec3d toolHeadOriginPos;
+    private final Vec3d laserCubeWorldPos;
     private final boolean noPower;
     private final boolean forceHomeGantry;
+    private final boolean rediscoveryDraining;
+    private final boolean rediscoveryLaserVerticalTravelActive;
     private final boolean interpolationEnabled;
     private final double blocksPerSecond;
     private final long worldTime;
@@ -51,8 +54,11 @@ public final class QuarryRenderContext {
             @Nullable BlockPos waypointNext,
             Vec3d toolHeadPos,
             Vec3d toolHeadOriginPos,
+            Vec3d laserCubeWorldPos,
             boolean noPower,
             boolean forceHomeGantry,
+            boolean rediscoveryDraining,
+            boolean rediscoveryLaserVerticalTravelActive,
             boolean interpolationEnabled,
             double blocksPerSecond,
             long worldTime
@@ -74,8 +80,11 @@ public final class QuarryRenderContext {
         this.waypointNext = waypointNext;
         this.toolHeadPos = toolHeadPos;
         this.toolHeadOriginPos = toolHeadOriginPos;
+        this.laserCubeWorldPos = laserCubeWorldPos;
         this.noPower = noPower;
         this.forceHomeGantry = forceHomeGantry;
+        this.rediscoveryDraining = rediscoveryDraining;
+        this.rediscoveryLaserVerticalTravelActive = rediscoveryLaserVerticalTravelActive;
         this.interpolationEnabled = interpolationEnabled;
         this.blocksPerSecond = blocksPerSecond;
         this.worldTime = worldTime;
@@ -102,8 +111,11 @@ public final class QuarryRenderContext {
                 be.getRenderChannelWaypointNextClient(),
                 be.getClientToolHeadPos(),
                 be.getClientToolHeadOriginPos(),
+                be.getClientLaserCubeWorldPos(),
                 be.isNoPowerClient(),
                 be.shouldForceHomeGantryClient(),
+                be.isRediscoveryDrainActiveClient(),
+                be.isRediscoveryLaserVerticalTravelActiveClient(),
                 be.isDebugInterpolationEnabledClient(),
                 be.getBlocksPerSecondClient(),
                 animationTick
@@ -127,8 +139,11 @@ public final class QuarryRenderContext {
     @Nullable public BlockPos waypointNext() { return waypointNext; }
     public Vec3d toolHeadPos() { return toolHeadPos; }
     public Vec3d toolHeadOriginPos() { return toolHeadOriginPos; }
+    public Vec3d laserCubeWorldPos() { return laserCubeWorldPos; }
     public boolean noPower() { return noPower; }
     public boolean forceHomeGantry() { return forceHomeGantry; }
+    public boolean rediscoveryDraining() { return rediscoveryDraining; }
+    public boolean rediscoveryLaserVerticalTravelActive() { return rediscoveryLaserVerticalTravelActive; }
     public boolean interpolationEnabled() { return interpolationEnabled; }
     public double blocksPerSecond() { return blocksPerSecond; }
     public long worldTime() { return worldTime; }

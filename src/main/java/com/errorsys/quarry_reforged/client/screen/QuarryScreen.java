@@ -60,7 +60,7 @@ public class QuarryScreen extends HandledScreen<QuarryScreenHandler> {
     private static final int STATUS_H = 36;
     private static final int STATUS_X = CONTROLS_X + CONTROLS_W + STATUS_GAP_FROM_CONTROLS;
     private static final int STATUS_TEXT_Y_OFFSET = 6;
-    private static final int STATUS_MESSAGE_Y_OFFSET = 20;
+    private static final int STATUS_MESSAGE_Y_OFFSET = 22;
     private static final int ENERGY_W = 22;
     private static final int ENERGY_H = 117;
     private static final int ENERGY_RIGHT_OFFSET = 7;

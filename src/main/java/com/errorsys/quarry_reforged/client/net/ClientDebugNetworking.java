@@ -27,16 +27,20 @@ public final class ClientDebugNetworking {
             String activeTargetType = buf.readString(64);
             boolean hasActiveTargetPos = buf.readBoolean();
             BlockPos activeTargetPos = hasActiveTargetPos ? buf.readBlockPos() : null;
-            String phaseHint = buf.readString(32);
-            String renderPhase = buf.readString(32);
-            int gantryRaw = buf.readVarInt();
-            int gantryValid = buf.readVarInt();
-            boolean hasGantryHead = buf.readBoolean();
-            BlockPos gantryHead = hasGantryHead ? buf.readBlockPos() : null;
-            int laserRaw = buf.readVarInt();
-            int laserValid = buf.readVarInt();
-            boolean hasLaserHead = buf.readBoolean();
-            BlockPos laserHead = hasLaserHead ? buf.readBlockPos() : null;
+            String machinePhase = buf.readString(32);
+            String laserSubstate = buf.readString(32);
+            String gantrySubstate = buf.readString(32);
+            String returnPhase = buf.readString(32);
+            String renderChannelPhase = buf.readString(32);
+            boolean rediscoveryLaserVerticalTravelActive = buf.readBoolean();
+            boolean rediscoveryCallerActive = buf.readBoolean();
+            String rediscoveryCallerPhase = buf.readString(32);
+            String rediscoveryCallerLaserSubstate = buf.readString(32);
+            String rediscoveryCallerGantrySubstate = buf.readString(32);
+            int rediscoveryRaw = buf.readVarInt();
+            int rediscoveryValid = buf.readVarInt();
+            boolean hasRediscoveryHead = buf.readBoolean();
+            BlockPos rediscoveryHead = hasRediscoveryHead ? buf.readBlockPos() : null;
 
             RediscoveryOverlayHud.Snapshot snapshot = new RediscoveryOverlayHud.Snapshot(
                     pos,
@@ -49,14 +53,19 @@ public final class ClientDebugNetworking {
                     nextScanInTicks,
                     activeTargetType,
                     activeTargetPos,
-                    phaseHint,
-                    renderPhase,
-                    gantryRaw,
-                    gantryValid,
-                    gantryHead,
-                    laserRaw,
-                    laserValid,
-                    laserHead
+                    machinePhase,
+                    laserSubstate,
+                    gantrySubstate,
+                    returnPhase,
+                    renderChannelPhase,
+                    rediscoveryLaserVerticalTravelActive,
+                    rediscoveryCallerActive,
+                    rediscoveryCallerPhase,
+                    rediscoveryCallerLaserSubstate,
+                    rediscoveryCallerGantrySubstate,
+                    rediscoveryRaw,
+                    rediscoveryValid,
+                    rediscoveryHead
             );
             client.execute(() -> RediscoveryOverlayHud.update(snapshot));
         });

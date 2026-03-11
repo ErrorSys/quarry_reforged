@@ -38,7 +38,7 @@ public class QuarryMarkerBlock extends BlockWithEntity {
     private static final VoxelShape EAST_SHAPE = Block.createCuboidShape(0, 7, 7, 10, 9, 9);
 
     public QuarryMarkerBlock() {
-        super(AbstractBlock.Settings.copy(Blocks.REDSTONE_BLOCK).strength(1.0f).nonOpaque().noCollision());
+        super(AbstractBlock.Settings.copy(Blocks.TORCH).breakInstantly().nonOpaque().noCollision());
         setDefaultState(getStateManager().getDefaultState().with(FACING, Direction.UP));
     }
 
@@ -57,6 +57,11 @@ public class QuarryMarkerBlock extends BlockWithEntity {
     public ActionResult onUse(BlockState state, World world, BlockPos pos, PlayerEntity player, Hand hand, BlockHitResult hit) {
         if (world.isClient) return ActionResult.SUCCESS;
         if (world instanceof ServerWorld sw) {
+            if (world.getBlockEntity(pos) instanceof QuarryMarkerBlockEntity markerBe
+                    && (markerBe.hasPreview() || markerBe.hasInvalidCardinalPreview())) {
+                QuarryMarkerPreviewService.clearPreviewAt(sw, pos);
+                return ActionResult.CONSUME;
+            }
             QuarryMarkerPreviewService.tryActivatePreview(sw, pos);
             return ActionResult.CONSUME;
         }
