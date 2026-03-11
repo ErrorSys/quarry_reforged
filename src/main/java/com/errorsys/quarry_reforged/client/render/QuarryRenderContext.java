@@ -1,5 +1,6 @@
 package com.errorsys.quarry_reforged.client.render;
 
+import com.errorsys.quarry_reforged.client.net.QuarryMotionClientState;
 import com.errorsys.quarry_reforged.content.blockentity.QuarryBlockEntity;
 import com.errorsys.quarry_reforged.content.blockentity.QuarryBlockEntity.RenderChannelPhase;
 import net.minecraft.util.math.BlockPos;
@@ -12,6 +13,7 @@ public final class QuarryRenderContext {
     private final RenderChannelPhase renderPhase;
     private final long renderPhaseStartedTick;
     private final long renderStateTick;
+    private final long toolHeadStateTick;
     private final int frameTopY;
     private final int innerMinX;
     private final int innerMaxX;
@@ -42,6 +44,7 @@ public final class QuarryRenderContext {
             RenderChannelPhase renderPhase,
             long renderPhaseStartedTick,
             long renderStateTick,
+            long toolHeadStateTick,
             int frameTopY,
             int innerMinX,
             int innerMaxX,
@@ -68,6 +71,7 @@ public final class QuarryRenderContext {
         this.renderPhase = renderPhase;
         this.renderPhaseStartedTick = renderPhaseStartedTick;
         this.renderStateTick = renderStateTick;
+        this.toolHeadStateTick = toolHeadStateTick;
         this.frameTopY = frameTopY;
         this.innerMinX = innerMinX;
         this.innerMaxX = innerMaxX;
@@ -93,12 +97,21 @@ public final class QuarryRenderContext {
     public static QuarryRenderContext from(QuarryBlockEntity be) {
         long serverSyncedTick = be.getWorld() == null ? 0L : be.getWorld().getTime();
         long animationTick = be.getDebugAnimationTickClient(serverSyncedTick);
+        long beRenderStateTick = be.getRenderChannelStateTickClient();
+        Vec3d beToolHeadPos = be.getClientToolHeadPos();
+        QuarryMotionClientState.ResolvedMotion resolvedMotion = QuarryMotionClientState.resolveToolHeadPos(
+                be,
+                serverSyncedTick,
+                beToolHeadPos,
+                beRenderStateTick
+        );
         return new QuarryRenderContext(
                 be.getPos(),
                 be.hasLockedAreaClient(),
                 be.getRenderChannelPhaseClient(),
                 be.getRenderChannelPhaseStartedTickClient(),
-                be.getRenderChannelStateTickClient(),
+                beRenderStateTick,
+                resolvedMotion.stateTick(),
                 be.getFrameTopY(),
                 be.getInnerMinX(),
                 be.getInnerMaxX(),
@@ -109,7 +122,7 @@ public final class QuarryRenderContext {
                 be.getRenderChannelActiveTargetClient(),
                 be.getRenderChannelWaypointCurrentClient(),
                 be.getRenderChannelWaypointNextClient(),
-                be.getClientToolHeadPos(),
+                resolvedMotion.toolHeadPos(),
                 be.getClientToolHeadOriginPos(),
                 be.getClientLaserCubeWorldPos(),
                 be.isNoPowerClient(),
@@ -127,6 +140,7 @@ public final class QuarryRenderContext {
     public RenderChannelPhase renderPhase() { return renderPhase; }
     public long renderPhaseStartedTick() { return renderPhaseStartedTick; }
     public long renderStateTick() { return renderStateTick; }
+    public long toolHeadStateTick() { return toolHeadStateTick; }
     public int frameTopY() { return frameTopY; }
     public int innerMinX() { return innerMinX; }
     public int innerMaxX() { return innerMaxX; }

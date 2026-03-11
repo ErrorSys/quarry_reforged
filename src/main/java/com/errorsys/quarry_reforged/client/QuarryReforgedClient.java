@@ -5,6 +5,7 @@ import com.errorsys.quarry_reforged.content.ModBlocks;
 import com.errorsys.quarry_reforged.content.ModScreenHandlers;
 import com.errorsys.quarry_reforged.client.debug.RediscoveryOverlayHud;
 import com.errorsys.quarry_reforged.client.net.ClientDebugNetworking;
+import com.errorsys.quarry_reforged.client.net.ClientMotionNetworking;
 import com.errorsys.quarry_reforged.client.render.QuarryBlockEntityRenderer;
 import com.errorsys.quarry_reforged.client.render.QuarryMarkerBlockEntityRenderer;
 import com.errorsys.quarry_reforged.client.screen.QuarryScreen;
@@ -22,6 +23,7 @@ public class QuarryReforgedClient implements ClientModInitializer {
         BlockEntityRendererFactories.register(ModBlockEntities.QUARRY_MARKER, QuarryMarkerBlockEntityRenderer::new);
         BlockRenderLayerMap.INSTANCE.putBlock(ModBlocks.FRAME, RenderLayer.getTranslucent());
         ClientDebugNetworking.register();
+        ClientMotionNetworking.register();
         RediscoveryOverlayHud.register();
     }
 }

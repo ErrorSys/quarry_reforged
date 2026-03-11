@@ -80,7 +80,7 @@ public class QuarryMarkerBlockEntityRenderer implements BlockEntityRenderer<Quar
 
     private void renderInvalidCardinalPreview(QuarryMarkerBlockEntity be, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light) {
         int shadedLight = clampShadedLight(light);
-        double range = Math.max(1, be.getInvalidCardinalRange());
+        double range = Math.max(1, be.getInvalidCardinalRange() - 1);
         Vec3d center = new Vec3d(0.5, 0.5, 0.5);
 
         renderHelperBeam(center, new Vec3d(1.0, 0.0, 0.0), range, matrices, vertexConsumers, shadedLight);

@@ -1,6 +1,8 @@
 package com.errorsys.quarry_reforged.client.render;
 
 import com.errorsys.quarry_reforged.QuarryReforged;
+import com.errorsys.quarry_reforged.client.debug.QuarryRenderTraceCapture;
+import com.errorsys.quarry_reforged.client.net.QuarryMotionClientState;
 import com.errorsys.quarry_reforged.client.render.component.BeamRenderer;
 import com.errorsys.quarry_reforged.client.render.component.GantryRenderer;
 import com.errorsys.quarry_reforged.client.render.component.LaserCubeRenderer;
@@ -254,7 +256,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         long quarryKey = be.getPos().asLong();
         Map<Long, FrameThrowGhost> ghosts = frameThrowGhosts.computeIfAbsent(quarryKey, k -> new HashMap<>());
         Vec3d start = getFrameThrowStartLocal();
-        double worldTime = context.worldTime() + clampTickDelta(tickDelta);
+        double worldTime = ((double) context.worldTime()) + (double) clampTickDelta(tickDelta);
         long renderNowMs = Util.getMeasuringTimeMs();
         double placementsPerSecond = Math.max(1.0, context.blocksPerSecond());
         double placementIntervalTicks = Math.max(1.0, 20.0 / placementsPerSecond);
@@ -374,7 +376,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
                                     int shadedLight,
                                     boolean beamEnabled) {
         long key = context.quarryPos().asLong();
-        double now = context.worldTime() + clampTickDelta(tickDelta);
+        double now = ((double) context.worldTime()) + (double) clampTickDelta(tickDelta);
         Vec3d cubePos = getCubeLocalPos(context, TOP_LASER_CUBE_MODE, tickDelta);
         CubeMotionState motionState = cubeMotionStates.get(key);
         if (context.rediscoveryDraining() && motionState != null && motionState.rediscoveryVolume != null) {
@@ -757,7 +759,25 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
     }
 
     private Vec3d getInterpolatedToolHeadPos(QuarryRenderContext context, float tickDelta) {
-        return getInterpolatedComponentPos(context, InterpolatedComponent.TOOL_HEAD, context.toolHeadPos(), tickDelta);
+        Vec3d rawPos = context.toolHeadPos();
+        double renderTick = ((double) context.worldTime()) + (double) clampTickDelta(tickDelta);
+        QuarryMotionClientState.InterpolatedMotionSample motionSample =
+                QuarryMotionClientState.sampleInterpolatedToolHeadPos(context.quarryPos(), renderTick, rawPos);
+        Vec3d renderedPos = rawPos;
+        if (!context.interpolationEnabled()) {
+            interpolationStates.remove(new InterpolationKey(context.quarryPos().asLong(), InterpolatedComponent.TOOL_HEAD));
+        } else {
+            renderedPos = motionSample.toolHeadPos();
+        }
+        QuarryRenderTraceCapture.onRenderSample(
+                context,
+                tickDelta,
+                rawPos,
+                renderedPos,
+                context.interpolationEnabled(),
+                motionSample
+        );
+        return renderedPos;
     }
 
     private Vec3d getInterpolatedComponentPos(QuarryRenderContext context,
@@ -770,18 +790,34 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             return rawPos;
         }
         InterpolationKey key = new InterpolationKey(context.quarryPos().asLong(), component);
-        double nowTick = context.worldTime() + clampTickDelta(tickDelta);
+        double nowTick = ((double) context.worldTime()) + (double) clampTickDelta(tickDelta);
+        long serverStateTick = component == InterpolatedComponent.TOOL_HEAD
+                ? context.toolHeadStateTick()
+                : context.renderStateTick();
         InterpolationState state = interpolationStates.get(key);
         if (state == null) {
-            state = new InterpolationState(rawPos, rawPos, nowTick, INTERPOLATION_MIN_DURATION_TICKS, nowTick);
+            state = new InterpolationState(rawPos, rawPos, nowTick, INTERPOLATION_MIN_DURATION_TICKS, nowTick, serverStateTick);
             interpolationStates.put(key, state);
             return rawPos;
         }
-        if (!approximatelyEquals(state.to, rawPos)) {
+
+        // If server tick source ever regresses (dimension swap/reload), reset interpolation baseline.
+        if (serverStateTick < state.lastServerStateTick) {
+            state.from = rawPos;
+            state.to = rawPos;
+            state.startTick = nowTick;
+            state.durationTicks = INTERPOLATION_MIN_DURATION_TICKS;
+            state.lastUpdateTick = nowTick;
+            state.lastServerStateTick = serverStateTick;
+            return rawPos;
+        }
+
+        boolean targetChanged = !approximatelyEquals(state.to, rawPos);
+        if (serverStateTick > state.lastServerStateTick && targetChanged) {
             Vec3d renderedNow = interpolateState(state, nowTick);
-            double elapsedSinceUpdate = nowTick - state.lastUpdateTick;
+            long elapsedServerTicks = Math.max(1L, serverStateTick - state.lastServerStateTick);
             double duration = MathHelper.clamp(
-                    elapsedSinceUpdate,
+                    (double) elapsedServerTicks,
                     INTERPOLATION_MIN_DURATION_TICKS,
                     INTERPOLATION_MAX_DURATION_TICKS
             );
@@ -789,6 +825,15 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             state.to = rawPos;
             state.startTick = nowTick;
             state.durationTicks = duration;
+            state.lastUpdateTick = nowTick;
+            state.lastServerStateTick = serverStateTick;
+        } else if (targetChanged) {
+            // Multiple updates landing in the same server tick can oscillate around a point.
+            // Snap intra-tick changes to avoid visible stutter loops.
+            state.from = rawPos;
+            state.to = rawPos;
+            state.startTick = nowTick;
+            state.durationTicks = INTERPOLATION_MIN_DURATION_TICKS;
             state.lastUpdateTick = nowTick;
         }
         return interpolateState(state, nowTick);
@@ -798,9 +843,10 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         InterpolationKey key = new InterpolationKey(context.quarryPos().asLong(), InterpolatedComponent.TOOL_HEAD);
         Vec3d rawPos = context.toolHeadPos();
         double nowTick = context.worldTime();
+        long serverStateTick = context.renderStateTick();
         InterpolationState state = interpolationStates.get(key);
         if (state == null) {
-            interpolationStates.put(key, new InterpolationState(rawPos, rawPos, nowTick, INTERPOLATION_MIN_DURATION_TICKS, nowTick));
+            interpolationStates.put(key, new InterpolationState(rawPos, rawPos, nowTick, INTERPOLATION_MIN_DURATION_TICKS, nowTick, serverStateTick));
             return;
         }
         state.from = rawPos;
@@ -808,6 +854,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         state.startTick = nowTick;
         state.durationTicks = INTERPOLATION_MIN_DURATION_TICKS;
         state.lastUpdateTick = nowTick;
+        state.lastServerStateTick = serverStateTick;
     }
 
     private Vec3d interpolateState(InterpolationState state, double nowTick) {
@@ -958,13 +1005,15 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         private double startTick;
         private double durationTicks;
         private double lastUpdateTick;
+        private long lastServerStateTick;
 
-        private InterpolationState(Vec3d from, Vec3d to, double startTick, double durationTicks, double lastUpdateTick) {
+        private InterpolationState(Vec3d from, Vec3d to, double startTick, double durationTicks, double lastUpdateTick, long lastServerStateTick) {
             this.from = from;
             this.to = to;
             this.startTick = startTick;
             this.durationTicks = durationTicks;
             this.lastUpdateTick = lastUpdateTick;
+            this.lastServerStateTick = lastServerStateTick;
         }
     }
 

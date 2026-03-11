@@ -1,5 +1,6 @@
 package com.errorsys.quarry_reforged.client.net;
 
+import com.errorsys.quarry_reforged.client.debug.QuarryRenderTraceCapture;
 import com.errorsys.quarry_reforged.client.debug.RediscoveryOverlayHud;
 import com.errorsys.quarry_reforged.net.ModNetworking;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -68,6 +69,19 @@ public final class ClientDebugNetworking {
                     rediscoveryHead
             );
             client.execute(() -> RediscoveryOverlayHud.update(snapshot));
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(ModNetworking.QUARRY_RENDER_TRACE_CONTROL, (client, handler, buf, responseSender) -> {
+            boolean enabled = buf.readBoolean();
+            if (!enabled) {
+                client.execute(() -> QuarryRenderTraceCapture.stop("manual stop packet"));
+                return;
+            }
+
+            BlockPos pos = buf.readBlockPos();
+            int durationTicks = buf.readVarInt();
+            double jumpThreshold = buf.readDouble();
+            client.execute(() -> QuarryRenderTraceCapture.start(pos, durationTicks, jumpThreshold));
         });
     }
 }

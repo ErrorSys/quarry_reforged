@@ -13,6 +13,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.network.PacketByteBuf;
+import net.minecraft.registry.RegistryKey;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -20,6 +21,8 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.World;
 
 import static net.minecraft.server.command.CommandManager.argument;
 import static net.minecraft.server.command.CommandManager.literal;
@@ -33,9 +36,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 public final class ModCommands {
     private static final Map<UUID, BlockPos> REDISCOVERY_OVERLAY_TARGETS = new HashMap<>();
+    private static final Map<UUID, GantryTraceCapture> GANTRY_TRACE_CAPTURES = new HashMap<>();
+    private static final int GANTRY_TRACE_DURATION_TICKS = 20 * 20;
     private static boolean callbacksRegistered = false;
 
     private ModCommands() {}
@@ -45,6 +55,7 @@ public final class ModCommands {
         if (!callbacksRegistered) {
             callbacksRegistered = true;
             ServerTickEvents.END_SERVER_TICK.register(ModCommands::tickRediscoveryOverlay);
+            ServerTickEvents.END_SERVER_TICK.register(ModCommands::tickGantryTraceCapture);
         }
     }
 
@@ -122,6 +133,18 @@ public final class ModCommands {
                                                                 .executes(ctx -> enableRediscoveryOverlay(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
                                                 .then(literal("off")
                                                         .executes(ctx -> disableRediscoveryOverlay(ctx.getSource()))))
+                                        .then(literal("gantrytrace")
+                                                .then(literal("on")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> startGantryTraceCapture(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
+                                                .then(literal("off")
+                                                        .executes(ctx -> stopGantryTraceCapture(ctx.getSource()))))
+                                        .then(literal("rendertrace")
+                                                .then(literal("on")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> startRenderTraceCapture(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
+                                                .then(literal("off")
+                                                        .executes(ctx -> stopRenderTraceCapture(ctx.getSource()))))
                                 )
                                 .then(literal("io")
                                         .then(literal("autoexportlog")
@@ -276,6 +299,88 @@ public final class ModCommands {
         return Command.SINGLE_SUCCESS;
     }
 
+    private static int startGantryTraceCapture(ServerCommandSource source, BlockPos pos) {
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendError(Text.literal("This command can only be used by a player."));
+            return 0;
+        }
+        ServerWorld world = source.getWorld();
+        BlockEntity blockEntity = world.getBlockEntity(pos);
+        if (!(blockEntity instanceof QuarryBlockEntity quarry)) {
+            source.sendError(Text.literal("No quarry block entity found at " + pos.toShortString() + "."));
+            return 0;
+        }
+
+        GantryTraceCapture capture = new GantryTraceCapture(
+                pos.toImmutable(),
+                world.getRegistryKey(),
+                world.getTime() + GANTRY_TRACE_DURATION_TICKS,
+                new StringBuilder("serverTick,phase,laser,gantry,returnPhase,renderPhase,renderStateTick,active,drainRediscovery,verticalTravel,toolX,toolY,toolZ,deltaFromPrev,distanceToTarget,target,waypointCurrent,waypointNext,bps\n"),
+                null
+        );
+        GANTRY_TRACE_CAPTURES.put(player.getUuid(), capture);
+        source.sendFeedback(() -> Text.literal("Gantry trace capture started at " + pos.toShortString() + " for 20 seconds."), false);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int stopGantryTraceCapture(ServerCommandSource source) {
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendError(Text.literal("This command can only be used by a player."));
+            return 0;
+        }
+        GantryTraceCapture capture = GANTRY_TRACE_CAPTURES.remove(player.getUuid());
+        if (capture == null) {
+            source.sendError(Text.literal("No active gantry trace capture."));
+            return 0;
+        }
+        finishGantryTraceCapture(player, capture, "manual stop");
+        source.sendFeedback(() -> Text.literal("Gantry trace capture stopped."), false);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int startRenderTraceCapture(ServerCommandSource source, BlockPos pos) {
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendError(Text.literal("This command can only be used by a player."));
+            return 0;
+        }
+        ServerWorld world = source.getWorld();
+        BlockEntity blockEntity = world.getBlockEntity(pos);
+        if (!(blockEntity instanceof QuarryBlockEntity)) {
+            source.sendError(Text.literal("No quarry block entity found at " + pos.toShortString() + "."));
+            return 0;
+        }
+        if (!ServerPlayNetworking.canSend(player, ModNetworking.QUARRY_RENDER_TRACE_CONTROL)) {
+            source.sendError(Text.literal("Client cannot receive render trace control packets."));
+            return 0;
+        }
+
+        PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+        buf.writeBoolean(true);
+        buf.writeBlockPos(pos);
+        buf.writeVarInt(GANTRY_TRACE_DURATION_TICKS);
+        buf.writeDouble(1.25D);
+        ServerPlayNetworking.send(player, ModNetworking.QUARRY_RENDER_TRACE_CONTROL, buf);
+        source.sendFeedback(() -> Text.literal("Client render trace started at " + pos.toShortString() + " for 20 seconds."), false);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int stopRenderTraceCapture(ServerCommandSource source) {
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendError(Text.literal("This command can only be used by a player."));
+            return 0;
+        }
+        if (!ServerPlayNetworking.canSend(player, ModNetworking.QUARRY_RENDER_TRACE_CONTROL)) {
+            source.sendError(Text.literal("Client cannot receive render trace control packets."));
+            return 0;
+        }
+
+        PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+        buf.writeBoolean(false);
+        ServerPlayNetworking.send(player, ModNetworking.QUARRY_RENDER_TRACE_CONTROL, buf);
+        source.sendFeedback(() -> Text.literal("Client render trace stop requested."), false);
+        return Command.SINGLE_SUCCESS;
+    }
+
     private static void tickRediscoveryOverlay(net.minecraft.server.MinecraftServer server) {
         if (REDISCOVERY_OVERLAY_TARGETS.isEmpty()) return;
 
@@ -297,6 +402,101 @@ public final class ModCommands {
 
             sendRediscoveryOverlayPacket(player, quarry, player.getServerWorld(), pos);
         }
+    }
+
+    private static void tickGantryTraceCapture(net.minecraft.server.MinecraftServer server) {
+        if (GANTRY_TRACE_CAPTURES.isEmpty()) return;
+
+        Iterator<Map.Entry<UUID, GantryTraceCapture>> it = GANTRY_TRACE_CAPTURES.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<UUID, GantryTraceCapture> entry = it.next();
+            ServerPlayerEntity player = server.getPlayerManager().getPlayer(entry.getKey());
+            GantryTraceCapture capture = entry.getValue();
+            if (player == null) {
+                it.remove();
+                continue;
+            }
+
+            ServerWorld world = server.getWorld(capture.worldKey);
+            if (world == null) {
+                finishGantryTraceCapture(player, capture, "world unavailable");
+                it.remove();
+                continue;
+            }
+
+            BlockEntity blockEntity = world.getBlockEntity(capture.quarryPos);
+            if (!(blockEntity instanceof QuarryBlockEntity quarry)) {
+                finishGantryTraceCapture(player, capture, "quarry missing");
+                it.remove();
+                continue;
+            }
+
+            RediscoveryDebugSnapshot snapshot = quarry.getRediscoveryDebugSnapshot(world);
+            Vec3d toolHead = quarry.getClientToolHeadPos();
+            BlockPos target = quarry.getRenderChannelActiveTargetClient();
+            BlockPos waypointCurrent = quarry.getRenderChannelWaypointCurrentClient();
+            BlockPos waypointNext = quarry.getRenderChannelWaypointNextClient();
+
+            double delta = 0.0;
+            if (capture.lastToolHeadPos != null) {
+                delta = toolHead.distanceTo(capture.lastToolHeadPos);
+            }
+            double distanceToTarget = -1.0;
+            if (target != null) {
+                distanceToTarget = toolHead.distanceTo(Vec3d.ofCenter(target));
+            }
+            capture.lastToolHeadPos = toolHead;
+
+            capture.rows.append(world.getTime()).append(',')
+                    .append(csv(snapshot.machinePhase())).append(',')
+                    .append(csv(snapshot.laserSubstate())).append(',')
+                    .append(csv(snapshot.gantrySubstate())).append(',')
+                    .append(csv(snapshot.returnPhase())).append(',')
+                    .append(csv(snapshot.renderChannelPhase())).append(',')
+                    .append(quarry.getRenderChannelStateTickClient()).append(',')
+                    .append(snapshot.active()).append(',')
+                    .append(snapshot.drainRediscoveryQueue()).append(',')
+                    .append(snapshot.rediscoveryLaserVerticalTravelActive()).append(',')
+                    .append(format(toolHead.x)).append(',')
+                    .append(format(toolHead.y)).append(',')
+                    .append(format(toolHead.z)).append(',')
+                    .append(format(delta)).append(',')
+                    .append(distanceToTarget < 0.0 ? "" : format(distanceToTarget)).append(',')
+                    .append(csv(formatPos(target))).append(',')
+                    .append(csv(formatPos(waypointCurrent))).append(',')
+                    .append(csv(formatPos(waypointNext))).append(',')
+                    .append(format(quarry.getBlocksPerSecondClient()))
+                    .append('\n');
+
+            if (world.getTime() >= capture.endTick) {
+                finishGantryTraceCapture(player, capture, "duration complete");
+                it.remove();
+            }
+        }
+    }
+
+    private static void finishGantryTraceCapture(ServerPlayerEntity player, GantryTraceCapture capture, String reason) {
+        try {
+            Path logsDir = Paths.get("logs");
+            Files.createDirectories(logsDir);
+            String ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            String fileName = "quarry_gantry_trace_" + ts + "_" + capture.quarryPos.toShortString().replace(", ", "_").replace(",", "_") + ".csv";
+            Path out = logsDir.resolve(fileName);
+            Files.writeString(out, capture.rows.toString());
+            player.sendMessage(Text.literal("Gantry trace saved (" + reason + "): " + out.toAbsolutePath()), false);
+        } catch (Exception e) {
+            player.sendMessage(Text.literal("Failed to save gantry trace: " + e.getMessage()), false);
+        }
+    }
+
+    private static String format(double value) {
+        return String.format(java.util.Locale.ROOT, "%.6f", value);
+    }
+
+    private static String csv(String value) {
+        if (value == null) return "";
+        String escaped = value.replace("\"", "\"\"");
+        return "\"" + escaped + "\"";
     }
 
     private static void sendRediscoveryOverlayPacket(ServerPlayerEntity player, QuarryBlockEntity quarry, ServerWorld world, BlockPos pos) {
@@ -369,5 +569,25 @@ public final class ModCommands {
 
     private static String orNone(String value) {
         return value == null || value.isBlank() ? "(none)" : value;
+    }
+
+    private static final class GantryTraceCapture {
+        private final BlockPos quarryPos;
+        private final RegistryKey<World> worldKey;
+        private final long endTick;
+        private final StringBuilder rows;
+        private Vec3d lastToolHeadPos;
+
+        private GantryTraceCapture(BlockPos quarryPos,
+                                   RegistryKey<World> worldKey,
+                                   long endTick,
+                                   StringBuilder rows,
+                                   Vec3d lastToolHeadPos) {
+            this.quarryPos = quarryPos;
+            this.worldKey = worldKey;
+            this.endTick = endTick;
+            this.rows = rows;
+            this.lastToolHeadPos = lastToolHeadPos;
+        }
     }
 }

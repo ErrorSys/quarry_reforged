@@ -12,6 +12,7 @@ import com.errorsys.quarry_reforged.machine.config.ItemIoGroup;
 import com.errorsys.quarry_reforged.machine.config.MachineIoMode;
 import com.errorsys.quarry_reforged.machine.config.MachineRedstoneMode;
 import com.errorsys.quarry_reforged.machine.config.MachineRelativeSide;
+import com.errorsys.quarry_reforged.net.ModNetworking;
 import com.errorsys.quarry_reforged.util.ChunkTickets;
 import net.fabricmc.fabric.api.screenhandler.v1.ExtendedScreenHandlerFactory;
 import net.fabricmc.fabric.api.transfer.v1.context.ContainerItemContext;
@@ -212,6 +213,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private double toolHeadX = Double.NaN;
     private double toolHeadY = Double.NaN;
     private double toolHeadZ = Double.NaN;
+    private long lastToolHeadSyncTick = Long.MIN_VALUE;
 
     // Energy
     public final SimpleEnergyStorage energy = new SimpleEnergyStorage(
@@ -2419,9 +2421,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         toolHeadZ = target.z;
         clientTargetPacked = packed;
         if (world instanceof ServerWorld sw) {
-            markDirty();
-            BlockState state = sw.getBlockState(pos);
-            sw.updateListeners(pos, state, state, Block.NOTIFY_LISTENERS);
+            long now = sw.getTime();
+            if (now != lastToolHeadSyncTick) {
+                lastToolHeadSyncTick = now;
+                ModNetworking.sendQuarryMotion(sw, pos, now, target);
+            }
         }
     }
 
