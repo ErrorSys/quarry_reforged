@@ -35,6 +35,7 @@ public final class QuarryRenderContext {
     private final boolean rediscoveryDraining;
     private final boolean rediscoveryLaserVerticalTravelActive;
     private final boolean interpolationEnabled;
+    private final boolean rediscoveryVolumeDebugRenderEnabled;
     private final double blocksPerSecond;
     private final long worldTime;
 
@@ -63,6 +64,7 @@ public final class QuarryRenderContext {
             boolean rediscoveryDraining,
             boolean rediscoveryLaserVerticalTravelActive,
             boolean interpolationEnabled,
+            boolean rediscoveryVolumeDebugRenderEnabled,
             double blocksPerSecond,
             long worldTime
     ) {
@@ -90,6 +92,7 @@ public final class QuarryRenderContext {
         this.rediscoveryDraining = rediscoveryDraining;
         this.rediscoveryLaserVerticalTravelActive = rediscoveryLaserVerticalTravelActive;
         this.interpolationEnabled = interpolationEnabled;
+        this.rediscoveryVolumeDebugRenderEnabled = rediscoveryVolumeDebugRenderEnabled;
         this.blocksPerSecond = blocksPerSecond;
         this.worldTime = worldTime;
     }
@@ -130,6 +133,7 @@ public final class QuarryRenderContext {
                 be.isRediscoveryDrainActiveClient(),
                 be.isRediscoveryLaserVerticalTravelActiveClient(),
                 be.isDebugInterpolationEnabledClient(),
+                be.isDebugRediscoveryVolumeRenderEnabledClient(),
                 be.getBlocksPerSecondClient(),
                 animationTick
         );
@@ -159,6 +163,7 @@ public final class QuarryRenderContext {
     public boolean rediscoveryDraining() { return rediscoveryDraining; }
     public boolean rediscoveryLaserVerticalTravelActive() { return rediscoveryLaserVerticalTravelActive; }
     public boolean interpolationEnabled() { return interpolationEnabled; }
+    public boolean rediscoveryVolumeDebugRenderEnabled() { return rediscoveryVolumeDebugRenderEnabled; }
     public double blocksPerSecond() { return blocksPerSecond; }
     public long worldTime() { return worldTime; }
 

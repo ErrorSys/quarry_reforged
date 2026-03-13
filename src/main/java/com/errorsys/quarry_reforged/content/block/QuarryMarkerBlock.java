@@ -62,7 +62,7 @@ public class QuarryMarkerBlock extends BlockWithEntity {
                 QuarryMarkerPreviewService.clearPreviewAt(sw, pos);
                 return ActionResult.CONSUME;
             }
-            QuarryMarkerPreviewService.tryActivatePreview(sw, pos);
+            QuarryMarkerPreviewService.tryActivatePreview(sw, pos, player);
             return ActionResult.CONSUME;
         }
         return ActionResult.SUCCESS;

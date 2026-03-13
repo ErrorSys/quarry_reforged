@@ -4,6 +4,7 @@ A BuildCraft-style quarry mod for Fabric, designed for Minecraft `1.20.1` with T
 
 ## Features
 - Marker-defined quarry areas with live laser preview.
+- Invalid marker layouts display helper beams in all cardinal directions (including up/down).
 - Automated frame build and frame removal routines.
 - Multi-phase mining flow:
   - Frame setup/build
@@ -32,10 +33,11 @@ A BuildCraft-style quarry mod for Fabric, designed for Minecraft `1.20.1` with T
 4. Place `quarry_reforged` in your `mods` folder.
 
 ## Quick Start
-1. Place the quarry block.
-2. Place quarry markers for the target area.
-3. Right-click any defining marker to validate and activate area preview.
-4. Press `Start` in the quarry GUI.
+1. Place quarry block.
+2. Place quarry markers for the target area, one behind the quarry, 1 in the X direction, 1 in the Z direction, and optionally one in the Y direction.
+3. Right-click a defining marker to validate and activate area preview.
+4. Right-click again to clear active preview/helper render.
+5. Press `Start` in the quarry GUI.
 
 `Start` requires an active marker preview on the origin marker behind the quarry.
 
@@ -54,28 +56,34 @@ Config file: `config/quarry_reforged.json`
 Main options:
 - `maxQuarrySize`
 - `blacklist`
-- `allowDefaultArea`
-- `defaultAreaSize`
 - `energyCapacity`
 - `maxEnergyInput`
 - `energyPerFrame`
 - `energyPerBlock`
 - `hardnessEnergyScale`
-- `ticksPerBlock`
+- `minBlocksPerSecond`
+- `maxBlocksPerSecond`
 - `enableChunkloadingUpgrade`
 - `chunkloadingUpgradeRadius`
 - `chunkTicketLevel`
-- `buildDescendingRing`
-- `frameCrossmemberSpacing`
+- `rediscoveryScanIntervalTicks`
+- `autoFrameRepair`
+- `frameRebuildScanInterval`
+- `debug` (enables `/quarry debug ...` command tree)
+- `enableStateDebugLogging`
 
 ## Commands
-Operator-only debug root: `/quarrydebug`
+Operator-only debug root (requires `debug=true`): `/quarry debug`
 
 Examples:
-- `/quarrydebug preview on <pos>`
-- `/quarrydebug phase gantry <pos>`
-- `/quarrydebug freeze on <pos>`
-- `/quarrydebug interpolation off <pos>`
+- `/quarry debug viz preview on <pos>`
+- `/quarry debug viz preview off <pos>`
+- `/quarry debug viz interp on <pos>`
+- `/quarry debug viz interp off <pos>`
+- `/quarry debug diag rediscovery on <pos>`
+- `/quarry debug diag gantrytrace on <pos>`
+- `/quarry debug diag rendertrace on <pos>`
+- `/quarry debug io autoexportlog on`
 
 ## Development
 Build with Gradle:

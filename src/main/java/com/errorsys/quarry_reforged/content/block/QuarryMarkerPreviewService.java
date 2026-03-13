@@ -4,11 +4,15 @@ import com.errorsys.quarry_reforged.QuarryReforged;
 import com.errorsys.quarry_reforged.config.ModConfig;
 import com.errorsys.quarry_reforged.content.ModBlocks;
 import com.errorsys.quarry_reforged.content.blockentity.QuarryMarkerBlockEntity;
+import com.errorsys.quarry_reforged.util.QuarryAreaRegistry;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.world.World;
 import net.minecraft.registry.RegistryKey;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -23,7 +27,7 @@ public final class QuarryMarkerPreviewService {
 
     private QuarryMarkerPreviewService() {}
 
-    public static boolean tryActivatePreview(ServerWorld world, BlockPos clicked) {
+    public static boolean tryActivatePreview(ServerWorld world, BlockPos clicked, @Nullable PlayerEntity player) {
         if (!world.getBlockState(clicked).isOf(ModBlocks.MARKER)) return false;
 
         List<BlockPos> markers = scanMarkers(world, clicked);
@@ -39,6 +43,21 @@ public final class QuarryMarkerPreviewService {
             QuarryReforged.LOGGER.info("Marker preview failed at {}: candidate intersects another active preview.", clicked);
             clearPreviewAt(world, clicked);
             setInvalidPreviewAt(world, clicked);
+            return false;
+        }
+
+        QuarryAreaRegistry.AreaBounds bounds = new QuarryAreaRegistry.AreaBounds(
+                candidate.minX, candidate.maxX,
+                candidate.minY, candidate.maxY,
+                candidate.minZ, candidate.maxZ
+        );
+        boolean intersectsTrackedActiveArea = QuarryAreaRegistry.get(world.getServer()).intersectsActiveArea(world, bounds, true);
+        if (intersectsTrackedActiveArea) {
+            QuarryReforged.LOGGER.info("Marker preview failed at {}: candidate intersects active tracked quarry area.", clicked);
+            clearPreviewAt(world, clicked);
+            if (player != null) {
+                player.sendMessage(Text.translatable("gui.quarry_reforged.marker.preview.rejected.active_area"), true);
+            }
             return false;
         }
 
@@ -147,7 +166,7 @@ public final class QuarryMarkerPreviewService {
                     existing.minX, existing.minY, existing.minZ,
                     existing.maxX + 1.0, existing.maxY + 1.0, existing.maxZ + 1.0
             );
-            if (candidateBox.intersects(existingBox)) return true;
+            if (intersectsXZ(candidateBox, existingBox)) return true;
         }
 
         for (BlockPos markerPos : scannedMarkers) {
@@ -169,9 +188,14 @@ public final class QuarryMarkerPreviewService {
                     markerBe.getMinX(), markerBe.getMinY(), markerBe.getMinZ(),
                     markerBe.getMaxX() + 1.0, markerBe.getMaxY() + 1.0, markerBe.getMaxZ() + 1.0
             );
-            if (candidateBox.intersects(existingBox)) return true;
+            if (intersectsXZ(candidateBox, existingBox)) return true;
         }
         return false;
+    }
+
+    private static boolean intersectsXZ(Box a, Box b) {
+        return a.minX < b.maxX && a.maxX > b.minX
+                && a.minZ < b.maxZ && a.maxZ > b.minZ;
     }
 
     private static Candidate findBestCandidateForClicked(List<BlockPos> markers, BlockPos clicked) {

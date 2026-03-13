@@ -13,8 +13,10 @@ public final class QuarryMotionClientState {
     private static final int MAX_QUARRIES = 256;
     private static final int MAX_BUFFERED_SAMPLES_PER_QUARRY = 64;
     private static final long STALE_TICKS = 80L;
-    private static final double INTERPOLATION_DELAY_TICKS = 1.5;
-    private static final double MAX_EXTRAPOLATION_TICKS = 0.30;
+    private static final double INTERPOLATION_DELAY_TICKS = 1.0;
+    private static final double MAX_EXTRAPOLATION_TICKS = 1.0;
+    private static final double TARGET_NEAREST_SAMPLE_MARGIN_TICKS = 0.20;
+    private static final double ESTIMATED_SERVER_TICK_SMOOTH_ALPHA = 0.10;
     private static final Map<Long, MotionSampleBuffer> SAMPLES = new LinkedHashMap<>();
 
     private QuarryMotionClientState() {}
@@ -71,7 +73,7 @@ public final class QuarryMotionClientState {
             );
         }
 
-        double estimatedServerTick = renderTick - buffer.tickOffsetEstimate;
+        double estimatedServerTick = buffer.smoothEstimatedServerTick(renderTick);
         double targetTick = estimatedServerTick - INTERPOLATION_DELAY_TICKS;
         MotionSample oldest = buffer.oldest();
         if (oldest == null) {
@@ -114,6 +116,24 @@ public final class QuarryMotionClientState {
             }
             next = sample;
             break;
+        }
+
+        // Hold very near the newest sample edge to avoid INTERPOLATED/EXTRAPOLATED ping-pong.
+        if (next == null && prev != null) {
+            double clampedTargetTick = Math.min(targetTick, (double) prev.serverTick - TARGET_NEAREST_SAMPLE_MARGIN_TICKS);
+            if (clampedTargetTick < targetTick) {
+                targetTick = clampedTargetTick;
+                prev = null;
+                next = null;
+                for (MotionSample sample : buffer.samples) {
+                    if (sample.serverTick <= targetTick) {
+                        prev = sample;
+                        continue;
+                    }
+                    next = sample;
+                    break;
+                }
+            }
         }
 
         if (prev != null && next != null && next.serverTick > prev.serverTick) {
@@ -268,6 +288,9 @@ public final class QuarryMotionClientState {
         private double tickOffsetEstimate = 0.0;
         private boolean hasOffsetEstimate = false;
         private long lastArrivalLocalTick = Long.MIN_VALUE;
+        private double smoothedEstimatedServerTick = 0.0;
+        private double lastResolvedRenderTick = Double.NaN;
+        private boolean hasSmoothedEstimatedServerTick = false;
 
         private void add(long serverTick, Vec3d toolHeadPos, long localWorldTick) {
             MotionSample latest = latest();
@@ -296,9 +319,24 @@ public final class QuarryMotionClientState {
                 hasOffsetEstimate = true;
                 return;
             }
-            // Smooth offset drift/jitter; higher values respond faster, lower values are steadier.
-            double alpha = 0.15;
+            // Favor timeline stability over rapid correction to suppress render jitter.
+            double alpha = 0.03;
             tickOffsetEstimate = tickOffsetEstimate + alpha * (observed - tickOffsetEstimate);
+        }
+
+        private double smoothEstimatedServerTick(double renderTick) {
+            double rawEstimated = renderTick - tickOffsetEstimate;
+            if (!hasSmoothedEstimatedServerTick || Double.isNaN(lastResolvedRenderTick)) {
+                smoothedEstimatedServerTick = rawEstimated;
+                lastResolvedRenderTick = renderTick;
+                hasSmoothedEstimatedServerTick = true;
+                return smoothedEstimatedServerTick;
+            }
+            double renderDelta = Math.max(0.0, renderTick - lastResolvedRenderTick);
+            double predicted = smoothedEstimatedServerTick + renderDelta;
+            smoothedEstimatedServerTick = predicted + ((rawEstimated - predicted) * ESTIMATED_SERVER_TICK_SMOOTH_ALPHA);
+            lastResolvedRenderTick = renderTick;
+            return smoothedEstimatedServerTick;
         }
 
         private boolean isEmpty() {

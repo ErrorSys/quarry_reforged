@@ -8,6 +8,7 @@ import net.minecraft.block.entity.BlockEntityTicker;
 import net.minecraft.block.entity.BlockEntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.ItemPlacementContext;
 import net.minecraft.nbt.NbtCompound;
@@ -24,6 +25,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.world.WorldAccess;
 import net.minecraft.world.World;
+import net.minecraft.sound.BlockSoundGroup;
 import reborncore.api.ToolManager;
 import org.jetbrains.annotations.Nullable;
 
@@ -32,7 +34,11 @@ public class QuarryBlock extends BlockWithEntity {
     public static final DirectionProperty FACING = Properties.HORIZONTAL_FACING;
 
     public QuarryBlock() {
-        super(AbstractBlock.Settings.copy(Blocks.IRON_BLOCK).strength(4.0f, 8.0f));
+        // Explicit settings keep hand/any-tool break behavior while remaining effectively explosion-proof.
+        super(AbstractBlock.Settings.create()
+                .mapColor(MapColor.IRON_GRAY)
+                .sounds(BlockSoundGroup.METAL)
+                .strength(2.0f, 3_600_000.0f));
         setDefaultState(getStateManager().getDefaultState().with(ACTIVE, false).with(FACING, Direction.NORTH));
     }
 
@@ -54,6 +60,16 @@ public class QuarryBlock extends BlockWithEntity {
     @Override
     public BlockRenderType getRenderType(BlockState state) {
         return BlockRenderType.MODEL;
+    }
+
+    @Override
+    public void afterBreak(World world, PlayerEntity player, BlockPos pos, BlockState state, @Nullable BlockEntity blockEntity, ItemStack tool) {
+        if (world.isClient) return;
+        if (player.isCreative()) return;
+
+        Item item = this.asItem();
+        if (item == null) return;
+        dropStack(world, pos, new ItemStack(item));
     }
 
     @Override
@@ -79,8 +95,14 @@ public class QuarryBlock extends BlockWithEntity {
                 net.minecraft.util.ItemScatterer.spawn(world, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, drop);
                 world.removeBlock(pos, false);
             } else {
+                if (quarry.hasLockedAreaClient()) {
+                    return ActionResult.CONSUME;
+                }
                 Direction target = hit.getSide().getAxis().isHorizontal() ? hit.getSide() : state.get(FACING).rotateYClockwise();
                 world.setBlockState(pos, state.with(FACING, target), Block.NOTIFY_ALL);
+                if (world.getBlockEntity(pos) instanceof QuarryBlockEntity rotatedQuarry) {
+                    rotatedQuarry.refreshStoredAreaPreviewForPlacementCheck();
+                }
             }
             return ActionResult.CONSUME;
         }
@@ -116,11 +138,18 @@ public class QuarryBlock extends BlockWithEntity {
     public void onPlaced(World world, BlockPos pos, BlockState state, @Nullable LivingEntity placer, ItemStack itemStack) {
         super.onPlaced(world, pos, state, placer, itemStack);
         if (world.isClient) return;
-        if (!itemStack.hasNbt()) return;
-        NbtCompound root = itemStack.getNbt();
-        if (root == null || !root.contains("blockEntity_data")) return;
         BlockEntity be = world.getBlockEntity(pos);
         if (!(be instanceof QuarryBlockEntity quarry)) return;
-        quarry.applyItemStateNbt(root.getCompound("blockEntity_data"));
+        if (itemStack.hasNbt()) {
+            NbtCompound root = itemStack.getNbt();
+            if (root != null && root.contains("blockEntity_data")) {
+                quarry.applyItemStateNbt(root.getCompound("blockEntity_data"));
+            }
+        }
+        if (placer instanceof PlayerEntity player) {
+            quarry.onPlacedBy(player);
+            return;
+        }
+        quarry.onPlacedBy(null);
     }
 }

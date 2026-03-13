@@ -3,8 +3,11 @@ package com.errorsys.quarry_reforged.command;
 import com.errorsys.quarry_reforged.content.blockentity.QuarryBlockEntity;
 import com.errorsys.quarry_reforged.content.blockentity.QuarryBlockEntity.RediscoveryDebugSnapshot;
 import com.errorsys.quarry_reforged.content.blockentity.QuarryBlockEntity.RenderChannelPhase;
+import com.errorsys.quarry_reforged.content.ModBlocks;
 import com.errorsys.quarry_reforged.net.ModNetworking;
 import com.errorsys.quarry_reforged.util.ChunkTickets;
+import com.errorsys.quarry_reforged.util.QuarryAreaRegistry;
+import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
 import io.netty.buffer.Unpooled;
@@ -23,6 +26,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
+import net.minecraft.world.chunk.WorldChunk;
 
 import static net.minecraft.server.command.CommandManager.argument;
 import static net.minecraft.server.command.CommandManager.literal;
@@ -65,6 +69,13 @@ public final class ModCommands {
         dispatcher.register(
                 literal("quarry")
                         .requires(source -> source.hasPermissionLevel(2))
+                        .then(literal("area")
+                                .then(literal("remove")
+                                        .executes(ctx -> removeAreaAtOperatorPosition(ctx.getSource(), false))
+                                        .then(argument("force", BoolArgumentType.bool())
+                                                .executes(ctx -> removeAreaAtOperatorPosition(ctx.getSource(), BoolArgumentType.getBool(ctx, "force"))))))
+                        .then(literal("deleteInactives")
+                                .executes(ctx -> forcePruneAreaRegistry(ctx.getSource())))
                         .then(literal("debug")
                                 .then(literal("viz")
                                         .then(literal("preview")
@@ -122,11 +133,24 @@ public final class ModCommands {
                                                 .then(literal("off")
                                                         .then(argument("pos", BlockPosArgumentType.blockPos())
                                                                 .executes(ctx -> setInterpolation(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
+                                        .then(literal("rediscovery_render")
+                                                .then(literal("on")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setRediscoveryRender(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), true))))
+                                                .then(literal("off")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> setRediscoveryRender(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"), false)))))
                                 )
                                 .then(literal("diag")
                                         .then(literal("tickets")
                                                 .then(argument("pos", BlockPosArgumentType.blockPos())
                                                         .executes(ctx -> debugTickets(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos")))))
+                                        .then(literal("perf")
+                                                .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                        .executes(ctx -> dumpPerf(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"))))
+                                                .then(literal("reset")
+                                                        .then(argument("pos", BlockPosArgumentType.blockPos())
+                                                                .executes(ctx -> resetPerf(ctx.getSource(), BlockPosArgumentType.getBlockPos(ctx, "pos"))))))
                                         .then(literal("rediscovery")
                                                 .then(literal("on")
                                                         .then(argument("pos", BlockPosArgumentType.blockPos())
@@ -220,6 +244,52 @@ public final class ModCommands {
         return 1;
     }
 
+    private static int setRediscoveryRender(ServerCommandSource source, BlockPos pos, boolean enabled) {
+        ServerWorld world = source.getWorld();
+        BlockEntity blockEntity = world.getBlockEntity(pos);
+        if (!(blockEntity instanceof QuarryBlockEntity quarry)) {
+            source.sendError(Text.literal("No quarry block entity found at " + pos.toShortString() + "."));
+            return 0;
+        }
+
+        quarry.setDebugRediscoveryVolumeRenderEnabled(enabled);
+        source.sendFeedback(() -> Text.literal("Quarry rediscovery volume/target debug render " + (enabled ? "enabled" : "disabled") + " at " + pos.toShortString() + "."), false);
+        return 1;
+    }
+
+    private static int dumpPerf(ServerCommandSource source, BlockPos pos) {
+        ServerWorld world = source.getWorld();
+        BlockEntity blockEntity = world.getBlockEntity(pos);
+        if (!(blockEntity instanceof QuarryBlockEntity quarry)) {
+            source.sendError(Text.literal("No quarry block entity found at " + pos.toShortString() + "."));
+            return 0;
+        }
+
+        QuarryBlockEntity.PerfSnapshot snapshot = quarry.getPerfSnapshot();
+        source.sendFeedback(() -> Text.literal(
+                "Quarry perf @" + pos.toShortString()
+                        + " lastTick=" + formatNanosAsMs(snapshot.lastTickNanos()) + "ms"
+                        + " windowAvg=" + formatNanosAsMs(snapshot.lastWindowAvgNanos()) + "ms"
+                        + " windowMax=" + formatNanosAsMs(snapshot.lastWindowMaxNanos()) + "ms"
+                        + " samples=" + snapshot.lastWindowSamples()
+                        + " ticks=[" + snapshot.lastWindowStartTick() + ".." + snapshot.lastWindowEndTick() + "]"
+        ), false);
+        return 1;
+    }
+
+    private static int resetPerf(ServerCommandSource source, BlockPos pos) {
+        ServerWorld world = source.getWorld();
+        BlockEntity blockEntity = world.getBlockEntity(pos);
+        if (!(blockEntity instanceof QuarryBlockEntity quarry)) {
+            source.sendError(Text.literal("No quarry block entity found at " + pos.toShortString() + "."));
+            return 0;
+        }
+
+        quarry.resetPerfStats();
+        source.sendFeedback(() -> Text.literal("Quarry perf counters reset at " + pos.toShortString() + "."), false);
+        return 1;
+    }
+
     private static int debugTickets(ServerCommandSource source, BlockPos pos) {
         ServerWorld world = source.getWorld();
         BlockEntity blockEntity = world.getBlockEntity(pos);
@@ -266,6 +336,110 @@ public final class ModCommands {
         extra.sort(Comparator.comparingInt((ChunkPos cp) -> cp.x).thenComparingInt(cp -> cp.z));
         source.sendFeedback(() -> Text.literal("Extra active chunks: " + formatChunkList(extra)), false);
         return 1;
+    }
+
+    private static int forcePruneAreaRegistry(ServerCommandSource source) {
+        ServerWorld world = source.getWorld();
+        QuarryAreaRegistry registry = QuarryAreaRegistry.get(world.getServer());
+        registry.reloadFromDisk();
+        int removed = registry.pruneNow();
+        int remaining = registry.trackedAreaCount();
+        source.sendFeedback(
+                () -> Text.literal("Quarry area registry prune complete. Removed=" + removed + ", remaining=" + remaining + "."),
+                false
+        );
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int removeAreaAtOperatorPosition(ServerCommandSource source, boolean force) {
+        ServerWorld world = source.getWorld();
+        QuarryAreaRegistry registry = QuarryAreaRegistry.get(world.getServer());
+        BlockPos operatorPos = BlockPos.ofFloored(source.getPosition());
+        QuarryAreaRegistry.AreaBounds target = registry.findAreaContainingBlock(world, operatorPos, true);
+        if (target == null) {
+            source.sendError(Text.literal("No tracked quarry area contains " + operatorPos.toShortString() + "."));
+            return 0;
+        }
+
+        List<QuarryBlockEntity> lockingQuarries = findQuarriesLockingArea(world, target);
+        if (!force && !lockingQuarries.isEmpty()) {
+            source.sendError(Text.literal(
+                    "Area is locked by " + lockingQuarries.size() + " quarry(s). Re-run with force=true to stop and remove it."
+            ));
+            return 0;
+        }
+
+        if (force) {
+            for (QuarryBlockEntity quarry : lockingQuarries) {
+                quarry.forceAdminStopAndUnlock(world);
+            }
+        }
+
+        registry.removeArea(world, target);
+        removeFrameBlocksInArea(world, target);
+        for (QuarryBlockEntity quarry : findQuarriesNearArea(world, target)) {
+            quarry.clearPlacementPreviewForAreaServer(target);
+        }
+        source.sendFeedback(
+                () -> Text.literal(
+                        "Removed Quarry Area [" + target.minX() + ".." + target.maxX()
+                                + "," + target.minZ() + ".." + target.maxZ() + "]"
+                ),
+                false
+        );
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int removeFrameBlocksInArea(ServerWorld world, QuarryAreaRegistry.AreaBounds bounds) {
+        int removed = 0;
+        BlockPos.Mutable mutable = new BlockPos.Mutable();
+        for (int y = bounds.minY(); y <= bounds.maxY(); y++) {
+            for (int x = bounds.minX(); x <= bounds.maxX(); x++) {
+                for (int z = bounds.minZ(); z <= bounds.maxZ(); z++) {
+                    mutable.set(x, y, z);
+                    if (!world.getBlockState(mutable).isOf(ModBlocks.FRAME)) continue;
+                    if (world.breakBlock(mutable, false)) {
+                        removed++;
+                    }
+                }
+            }
+        }
+        return removed;
+    }
+
+    private static List<QuarryBlockEntity> findQuarriesLockingArea(ServerWorld world, QuarryAreaRegistry.AreaBounds bounds) {
+        List<QuarryBlockEntity> found = new ArrayList<>();
+        for (QuarryBlockEntity quarry : findQuarriesNearArea(world, bounds)) {
+            QuarryAreaRegistry.AreaBounds locked = quarry.getLockedAreaBoundsServer();
+            if (locked == null || !locked.equals(bounds)) continue;
+            found.add(quarry);
+        }
+        return found;
+    }
+
+    private static List<QuarryBlockEntity> findQuarriesNearArea(ServerWorld world, QuarryAreaRegistry.AreaBounds bounds) {
+        List<QuarryBlockEntity> found = new ArrayList<>();
+        int minChunkX = Math.floorDiv(bounds.minX() - 1, 16);
+        int maxChunkX = Math.floorDiv(bounds.maxX() + 1, 16);
+        int minChunkZ = Math.floorDiv(bounds.minZ() - 1, 16);
+        int maxChunkZ = Math.floorDiv(bounds.maxZ() + 1, 16);
+
+        for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+                WorldChunk chunk = world.getChunk(chunkX, chunkZ);
+                for (BlockEntity be : chunk.getBlockEntities().values()) {
+                    if (!(be instanceof QuarryBlockEntity quarry)) continue;
+                    found.add(quarry);
+                }
+            }
+        }
+        return found;
+    }
+
+    private static String formatBounds(QuarryAreaRegistry.AreaBounds bounds) {
+        return bounds.minX() + ".." + bounds.maxX()
+                + ", " + bounds.minY() + ".." + bounds.maxY()
+                + ", " + bounds.minZ() + ".." + bounds.maxZ();
     }
 
     private static int enableRediscoveryOverlay(ServerCommandSource source, BlockPos pos) {
@@ -491,6 +665,10 @@ public final class ModCommands {
 
     private static String format(double value) {
         return String.format(java.util.Locale.ROOT, "%.6f", value);
+    }
+
+    private static String formatNanosAsMs(long nanos) {
+        return String.format(java.util.Locale.ROOT, "%.3f", Math.max(0L, nanos) / 1_000_000.0);
     }
 
     private static String csv(String value) {

@@ -14,6 +14,7 @@ import com.errorsys.quarry_reforged.machine.config.MachineRedstoneMode;
 import com.errorsys.quarry_reforged.machine.config.MachineRelativeSide;
 import com.errorsys.quarry_reforged.net.ModNetworking;
 import com.errorsys.quarry_reforged.util.ChunkTickets;
+import com.errorsys.quarry_reforged.util.QuarryAreaRegistry;
 import net.fabricmc.fabric.api.screenhandler.v1.ExtendedScreenHandlerFactory;
 import net.fabricmc.fabric.api.transfer.v1.context.ContainerItemContext;
 import net.fabricmc.fabric.api.transfer.v1.item.ItemStorage;
@@ -106,6 +107,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     // Owner UUID
     private UUID owner;
+    private boolean areaRegistryTrackingActive = false;
+    private MachinePhase areaRegistryTrackedPhase = MachinePhase.NO_POWER;
 
     // State
     private boolean active = false;
@@ -125,6 +128,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     // Area bounds (XYZ)
     private boolean areaLocked = false;
     private int minX, maxX, minY, maxY, minZ, maxZ;
+    private boolean placementAreaPreviewActive = false;
+    private int placementPreviewMinX;
+    private int placementPreviewMaxX;
+    private int placementPreviewMinY;
+    private int placementPreviewMaxY;
+    private int placementPreviewMinZ;
+    private int placementPreviewMaxZ;
 
     // Frame
     private int frameClearanceIndex = 0;
@@ -199,6 +209,20 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private boolean debugFreezeAnimation = false;
     private long debugFrozenAnimationTick = 0L;
     private boolean debugInterpolationEnabled = true;
+    private boolean debugRediscoveryVolumeRenderEnabled = false;
+    private long perfWindowStartTick = Long.MIN_VALUE;
+    private long perfWindowAccumulatedNanos = 0L;
+    private long perfWindowMaxNanos = 0L;
+    private int perfWindowSamples = 0;
+    private long perfLastTickNanos = 0L;
+    private long perfLastWindowAvgNanos = 0L;
+    private long perfLastWindowMaxNanos = 0L;
+    private int perfLastWindowSamples = 0;
+    private long perfLastWindowStartTick = Long.MIN_VALUE;
+    private long perfLastWindowEndTick = Long.MIN_VALUE;
+    private long energySpentThisTick = 0L;
+    private long energySpentLastTick = 0L;
+    private long blocksMined = 0L;
     private RenderChannelPhase renderChannelPhase = RenderChannelPhase.RENDER_NONE;
     private long renderChannelPhaseStartedTick = 0L;
     private long renderChannelStateTick = 0L;
@@ -277,7 +301,10 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     public void onBroken() {
-        if (world instanceof ServerWorld sw) ChunkTickets.clearTickets(sw, pos, this);
+        if (world instanceof ServerWorld sw) {
+            ChunkTickets.clearTickets(sw, pos, this);
+            QuarryAreaRegistry.get(sw.getServer()).releaseSoftLockByQuarryPos(sw, pos);
+        }
     }
 
     public void onToggleRequested() {
@@ -304,6 +331,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             debugLog("ui toggle action: cancel remove_frame");
             frameRemovalActive = false;
             machinePhase = MachinePhase.IDLE;
+            laserSubstate = LaserSubstate.LASER_MINE_IDLE;
+            gantrySubstate = GantrySubstate.NONE;
             clearActiveMiningTarget();
             clearStatusMessage();
             updateStatusState(sw);
@@ -343,10 +372,17 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (!areaLocked) {
             boolean lockedFromMarkerPreview = lockAreaFromOriginMarkerPreview(sw);
             if (!lockedFromMarkerPreview) {
-                debugLog("ui toggle rejected: marker preview lock failed");
-                setStatusMessage("gui.quarry_reforged.scan.fail.preview_required", 0xFFE35D5D, -1L);
-                syncState();
-                return;
+                boolean lockedFromTrackedArea = lockAreaFromTrackedRegistry(sw);
+                if (!lockedFromTrackedArea) {
+                    debugLog("ui toggle rejected: marker preview + tracked area lock failed");
+                    setStatusMessage("gui.quarry_reforged.scan.fail.preview_required", 0xFFE35D5D, -1L);
+                    syncState();
+                    return;
+                }
+                debugLog("ui toggle lock source: tracked-area");
+            } else {
+                debugLog("ui toggle lock source: marker-preview");
+                QuarryMarkerPreviewService.clearPreviewAt(sw, getOriginMarkerPos());
             }
             if (!hasClearFrameBuildPath(sw)) {
                 debugLog("ui toggle rejected: frame path blocked");
@@ -354,11 +390,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 syncState();
                 return;
             }
-            QuarryMarkerPreviewService.clearPreviewAt(sw, getOriginMarkerPos());
         } else {
             clearStatusMessage();
         }
 
+        clearPlacementAreaPreview();
         clearDebugVisualPreview();
         setActive(true);
         debugLog("ui toggle action: machine started");
@@ -402,7 +438,9 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 returnPhase = ReturnPhase.NONE;
                 frameWorkBudget = 0.0;
                 miningBudget = 0.0;
-                laserSubstate = LaserSubstate.NONE;
+                laserSubstate = resumePhase == MachinePhase.REMOVE_FRAME
+                        ? LaserSubstate.LASER_MINE_IDLE
+                        : LaserSubstate.NONE;
                 gantrySubstate = GantrySubstate.NONE;
                 machinePhase = MachinePhase.IDLE;
                 updateStatusState(sw);
@@ -412,7 +450,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private BlockPos getOriginMarkerPos() {
-        Direction facing = getCachedState().contains(QuarryBlock.FACING) ? getCachedState().get(QuarryBlock.FACING) : Direction.NORTH;
+        BlockState state = world == null ? getCachedState() : world.getBlockState(pos);
+        Direction facing = state.contains(QuarryBlock.FACING) ? state.get(QuarryBlock.FACING) : Direction.NORTH;
         return pos.offset(facing.getOpposite());
     }
 
@@ -427,6 +466,49 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 area.minZ(), area.maxZ()
         );
         return areaLocked;
+    }
+
+    private boolean lockAreaFromTrackedRegistry(ServerWorld sw) {
+        Direction facing = getCachedState().contains(QuarryBlock.FACING) ? getCachedState().get(QuarryBlock.FACING) : Direction.NORTH;
+        QuarryAreaRegistry.AreaBounds bounds = QuarryAreaRegistry.get(sw.getServer()).findRelockCandidate(sw, pos, facing);
+        if (bounds == null) return false;
+        lockArea(bounds.minX(), bounds.maxX(), bounds.minY(), bounds.maxY(), bounds.minZ(), bounds.maxZ());
+        return areaLocked;
+    }
+
+    public void onPlacedBy(@Nullable PlayerEntity placedBy) {
+        if (placedBy != null) {
+            owner = placedBy.getUuid();
+        }
+        refreshStoredAreaPreviewForPlacementCheck();
+    }
+
+    public void refreshStoredAreaPreviewForPlacementCheck() {
+        if (!(world instanceof ServerWorld sw)) return;
+        if (areaLocked) {
+            clearPlacementAreaPreview();
+            syncState();
+            return;
+        }
+
+        BlockPos behind = getOriginMarkerPos();
+        if (sw.getBlockState(behind).isOf(ModBlocks.MARKER)) {
+            QuarryAreaRegistry.get(sw.getServer()).releaseSoftLockByQuarryPos(sw, pos);
+            clearPlacementAreaPreview();
+            syncState();
+            return;
+        }
+
+        Direction facing = getCachedState().contains(QuarryBlock.FACING) ? getCachedState().get(QuarryBlock.FACING) : Direction.NORTH;
+        QuarryAreaRegistry.AreaBounds bounds = QuarryAreaRegistry.get(sw.getServer()).findRelockCandidate(sw, pos, facing);
+        if (bounds == null) {
+            QuarryAreaRegistry.get(sw.getServer()).releaseSoftLockByQuarryPos(sw, pos);
+            clearPlacementAreaPreview();
+            syncState();
+            return;
+        }
+        setPlacementAreaPreview(bounds);
+        syncState();
     }
 
     public void onRemoveFrameRequested() {
@@ -818,10 +900,31 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     private long getRequiredEnergyForPhase(ServerWorld sw, MachinePhase phase) {
         return switch (phase) {
-            case BUILD_FRAME, FRAME_REPAIR, REMOVE_FRAME -> ModConfig.DATA.energyPerFrame;
+            case BUILD_FRAME, FRAME_REPAIR, REMOVE_FRAME -> getFrameEnergyCost();
             case LASER_MINE, GANTRY_MINE -> getRequiredEnergyForMiningPhase(sw);
             default -> 0L;
         };
+    }
+
+    private long toEvenWholeEnergy(long value) {
+        if (value <= 0L) return 0L;
+        return (value & 1L) == 0L ? value : value + 1L;
+    }
+
+    private long getFrameEnergyCost() {
+        return toEvenWholeEnergy(ModConfig.DATA.energyPerFrame);
+    }
+
+    private long getMiningEnergyCost(float hardness) {
+        long rawCost = ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
+        return toEvenWholeEnergy(rawCost);
+    }
+
+    private void consumeEnergy(long amount) {
+        long evenAmount = toEvenWholeEnergy(amount);
+        if (evenAmount <= 0L) return;
+        energy.amount = Math.max(0L, energy.amount - evenAmount);
+        energySpentThisTick += evenAmount;
     }
 
     private long getRequiredEnergyForMiningPhase(ServerWorld sw) {
@@ -832,7 +935,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (rediscoveredTarget != null) {
             BlockState nextState = sw.getBlockState(rediscoveredTarget);
             float hardness = nextState.getHardness(sw, rediscoveredTarget);
-            return ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
+            return getMiningEnergyCost(hardness);
         }
 
         BlockPos nextTarget = getNextMineableTarget(sw);
@@ -840,7 +943,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         BlockState nextState = sw.getBlockState(nextTarget);
         float hardness = nextState.getHardness(sw, nextTarget);
-        return ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
+        return getMiningEnergyCost(hardness);
     }
 
     private MachinePhase inferMachinePhaseFromRuntime() {
@@ -939,6 +1042,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         this.minZ = aMinZ;
         this.maxZ = aMaxZ;
         this.areaLocked = true;
+        clearPlacementAreaPreview();
 
         frameClearanceIndex = 0;
         cachedFrameClearance = null;
@@ -959,112 +1063,143 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         clearRediscoveryState();
         clearMiningTravelState();
         clearFreezeLocks();
+        blocksMined = 0L;
         if (machinePhase != MachinePhase.NO_POWER) {
             machinePhase = MachinePhase.IDLE;
         }
         laserSubstate = LaserSubstate.NONE;
         gantrySubstate = GantrySubstate.NONE;
         clearResumeState();
+
+        if (world instanceof ServerWorld sw) {
+            QuarryAreaRegistry.AreaBounds bounds = new QuarryAreaRegistry.AreaBounds(this.minX, this.maxX, this.minY, this.maxY, this.minZ, this.maxZ);
+            Direction facing = getCachedState().contains(QuarryBlock.FACING) ? getCachedState().get(QuarryBlock.FACING) : Direction.NORTH;
+            QuarryAreaRegistry.get(sw.getServer()).recordAreaLocked(sw, bounds, machinePhase.name(), owner, pos, facing);
+            areaRegistryTrackingActive = true;
+            areaRegistryTrackedPhase = machinePhase;
+        }
+    }
+
+    private void setPlacementAreaPreview(QuarryAreaRegistry.AreaBounds bounds) {
+        placementAreaPreviewActive = true;
+        placementPreviewMinX = bounds.minX();
+        placementPreviewMaxX = bounds.maxX();
+        placementPreviewMinY = bounds.minY();
+        placementPreviewMaxY = bounds.maxY();
+        placementPreviewMinZ = bounds.minZ();
+        placementPreviewMaxZ = bounds.maxZ();
+    }
+
+    private void clearPlacementAreaPreview() {
+        placementAreaPreviewActive = false;
     }
 
     // ticking
     public static void tickServer(World world, BlockPos pos, BlockState state, QuarryBlockEntity be) {
         if (!(world instanceof ServerWorld sw)) return;
+        long perfStartNanos = System.nanoTime();
+        be.energySpentThisTick = 0L;
+        try {
+            QuarryAreaRegistry.get(sw.getServer()).maybePrune();
 
-        // config sync
-        if (be.energy.amount > ModConfig.DATA.energyCapacity) {
-            be.energy.amount = ModConfig.DATA.energyCapacity;
-        }
-        be.clampUpgradeSlotsServer(sw);
-        be.chargeFromEnergyItemSlot();
+            // config sync
+            if (be.energy.amount > ModConfig.DATA.energyCapacity) {
+                be.energy.amount = ModConfig.DATA.energyCapacity;
+            }
+            be.clampUpgradeSlotsServer(sw);
+            be.chargeFromEnergyItemSlot();
 
-        be.expireStatusMessage(sw);
-        be.handlePowerPhase(sw);
-        be.updateStatusState(sw);
-        if (be.machinePhase == MachinePhase.NO_POWER) {
-            return;
-        }
-        if (be.machinePhase == MachinePhase.STOPPING && be.returnPhase == ReturnPhase.NONE) {
-            be.machinePhase = MachinePhase.IDLE;
-        }
-
-        if (!be.active && be.returnPhase == ReturnPhase.NONE && !be.frameRemovalActive) return;
-        if (!be.areaLocked && be.returnPhase == ReturnPhase.NONE && !be.frameRemovalActive) return;
-
-        if (!be.isRedstoneConditionMet(sw)) {
+            be.expireStatusMessage(sw);
+            be.handlePowerPhase(sw);
             be.updateStatusState(sw);
-            return;
-        }
+            if (be.machinePhase == MachinePhase.NO_POWER) {
+                return;
+            }
+            if (be.machinePhase == MachinePhase.STOPPING && be.returnPhase == ReturnPhase.NONE) {
+                be.machinePhase = MachinePhase.IDLE;
+            }
 
-        if (be.hasChunkloadUpgrade() && ModConfig.DATA.enableChunkloadingUpgrade && be.areaLocked) {
-            ChunkTickets.ensureTicketsForArea(
-                    sw,
-                    be.pos,
-                    be.minX,
-                    be.maxX,
-                    be.minZ,
-                    be.maxZ,
-                    ModConfig.DATA.chunkTicketLevel
-            );
-        }
+            if (!be.active && be.returnPhase == ReturnPhase.NONE && !be.frameRemovalActive) return;
+            if (!be.areaLocked && be.returnPhase == ReturnPhase.NONE && !be.frameRemovalActive) return;
 
-        if (be.returnPhase != ReturnPhase.NONE) {
-            be.machinePhase = (be.returnPhase == ReturnPhase.FINISHING) ? MachinePhase.FINISH : MachinePhase.STOPPING;
+            if (!be.isRedstoneConditionMet(sw)) {
+                be.updateStatusState(sw);
+                return;
+            }
+
+            if (be.hasChunkloadUpgrade() && ModConfig.DATA.enableChunkloadingUpgrade && be.areaLocked) {
+                ChunkTickets.ensureTicketsForArea(
+                        sw,
+                        be.pos,
+                        be.minX,
+                        be.maxX,
+                        be.minZ,
+                        be.maxZ,
+                        ModConfig.DATA.chunkTicketLevel
+                );
+            }
+
+            if (be.returnPhase != ReturnPhase.NONE) {
+                be.machinePhase = (be.returnPhase == ReturnPhase.FINISHING) ? MachinePhase.FINISH : MachinePhase.STOPPING;
+                be.miningBudget += be.getBlocksPerTick();
+                be.stepReturnToOrigin(sw);
+                be.miningBudget = Math.min(be.miningBudget, 1.0);
+                be.updateStatusState(sw);
+                return;
+            }
+
+            if (be.frameRemovalActive) {
+                be.machinePhase = MachinePhase.REMOVE_FRAME;
+                be.miningBudget += be.getBlocksPerTick();
+                be.miningBudget = be.stepFrameRemoval(sw, be.miningBudget);
+                be.miningBudget = Math.min(be.miningBudget, 1.0);
+                be.updateStatusState(sw);
+                return;
+            }
+
+            be.frameWorkBudget += be.getBlocksPerTick();
+            int requestedFrameOps = (int) be.frameWorkBudget;
+            if (requestedFrameOps > 0) {
+                be.machinePhase = be.pendingFrameRepairs.isEmpty() ? MachinePhase.BUILD_FRAME : MachinePhase.FRAME_REPAIR;
+                int completedFrameOps = be.stepFrame(sw, requestedFrameOps);
+                be.frameWorkBudget -= completedFrameOps;
+                if (completedFrameOps < requestedFrameOps) {
+                    be.frameWorkBudget = Math.min(be.frameWorkBudget, 1.0);
+                }
+            }
+            if (be.frameIndex < be.cachedFrameSize(sw) || !be.pendingFrameRepairs.isEmpty()) return;
+            be.initFrameBuildComplete = true;
+            be.restoreFrameRepairCallerIfPresent();
+            be.releaseFreeze(FreezeReason.FRAME_REPAIR);
+
+            if (!be.checkFrameIntegrityForCurrentLayer(sw)) return;
+
+            be.ensureMiningInit(sw);
+            if (be.layerY < be.minY || be.drainRediscoveryQueue) {
+                be.runRediscoveryScan(sw);
+            }
+            boolean topLaserActive = be.shouldUseTopLaserClient() || be.drainRediscoveryQueue;
+            if (topLaserActive) {
+                be.machinePhase = MachinePhase.LASER_MINE;
+                be.laserSubstate = be.drainRediscoveryQueue ? LaserSubstate.LASER_MINE_REDISCOVERY : LaserSubstate.LASER_CLEAR_FRAME_AREA;
+                if (be.gantrySubstate != GantrySubstate.FREEZE) {
+                    be.gantrySubstate = GantrySubstate.NONE;
+                }
+            } else {
+                be.machinePhase = MachinePhase.GANTRY_MINE;
+                be.laserSubstate = LaserSubstate.NONE;
+                if (be.gantrySubstate == GantrySubstate.NONE) {
+                    be.gantrySubstate = GantrySubstate.MINE;
+                }
+            }
             be.miningBudget += be.getBlocksPerTick();
-            be.stepReturnToOrigin(sw);
+            be.miningBudget = be.stepMine(sw, be.miningBudget);
             be.miningBudget = Math.min(be.miningBudget, 1.0);
             be.updateStatusState(sw);
-            return;
+        } finally {
+            be.energySpentLastTick = be.toEvenWholeEnergy(be.energySpentThisTick);
+            be.recordPerfSample(sw.getTime(), System.nanoTime() - perfStartNanos);
         }
-
-        if (be.frameRemovalActive) {
-            be.machinePhase = MachinePhase.REMOVE_FRAME;
-            be.miningBudget += be.getBlocksPerTick();
-            be.miningBudget = be.stepFrameRemoval(sw, be.miningBudget);
-            be.miningBudget = Math.min(be.miningBudget, 1.0);
-            be.updateStatusState(sw);
-            return;
-        }
-
-        be.frameWorkBudget += be.getBlocksPerTick();
-        int requestedFrameOps = (int) be.frameWorkBudget;
-        if (requestedFrameOps > 0) {
-            be.machinePhase = be.pendingFrameRepairs.isEmpty() ? MachinePhase.BUILD_FRAME : MachinePhase.FRAME_REPAIR;
-            int completedFrameOps = be.stepFrame(sw, requestedFrameOps);
-            be.frameWorkBudget -= completedFrameOps;
-            if (completedFrameOps < requestedFrameOps) {
-                be.frameWorkBudget = Math.min(be.frameWorkBudget, 1.0);
-            }
-        }
-        if (be.frameIndex < be.cachedFrameSize(sw) || !be.pendingFrameRepairs.isEmpty()) return;
-        be.initFrameBuildComplete = true;
-        be.restoreFrameRepairCallerIfPresent();
-        be.releaseFreeze(FreezeReason.FRAME_REPAIR);
-
-        if (!be.checkFrameIntegrityForCurrentLayer(sw)) return;
-
-        be.ensureMiningInit(sw);
-        if (be.layerY < be.minY || be.drainRediscoveryQueue) {
-            be.runRediscoveryScan(sw);
-        }
-        boolean topLaserActive = be.shouldUseTopLaserClient() || be.drainRediscoveryQueue;
-        if (topLaserActive) {
-            be.machinePhase = MachinePhase.LASER_MINE;
-            be.laserSubstate = be.drainRediscoveryQueue ? LaserSubstate.LASER_MINE_REDISCOVERY : LaserSubstate.LASER_CLEAR_FRAME_AREA;
-            if (be.gantrySubstate != GantrySubstate.FREEZE) {
-                be.gantrySubstate = GantrySubstate.NONE;
-            }
-        } else {
-            be.machinePhase = MachinePhase.GANTRY_MINE;
-            be.laserSubstate = LaserSubstate.NONE;
-            if (be.gantrySubstate == GantrySubstate.NONE) {
-                be.gantrySubstate = GantrySubstate.MINE;
-            }
-        }
-        be.miningBudget += be.getBlocksPerTick();
-        be.miningBudget = be.stepMine(sw, be.miningBudget);
-        be.miningBudget = Math.min(be.miningBudget, 1.0);
-        be.updateStatusState(sw);
     }
 
     private void chargeFromEnergyItemSlot() {
@@ -1112,6 +1247,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     private int stepFrame(ServerWorld sw, int ops) {
         int workDone = 0;
+        long frameEnergyCost = getFrameEnergyCost();
         while (workDone < ops) {
             WorkTarget target = getNextFrameTarget(sw);
             if (target == null) {
@@ -1127,7 +1263,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 case FRAME_PLACE, FRAME_REPAIR -> {
                     BlockState existing = sw.getBlockState(target.pos());
                     if (!existing.isOf(ModBlocks.FRAME)) {
-                        if (energy.amount < ModConfig.DATA.energyPerFrame) {
+                        if (energy.amount < frameEnergyCost) {
                             if (workDone > 0) {
                                 markDirty();
                                 BlockState state = sw.getBlockState(pos);
@@ -1136,7 +1272,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                             return workDone;
                         }
                         boolean hasFluid = !existing.getFluidState().isEmpty();
-                        if (!existing.isAir() && !hasFluid && !harvestBlock(sw, target.pos(), existing)) {
+                        if (!existing.isAir() && !hasFluid && !harvestBlock(sw, target.pos(), existing, true)) {
                             if (workDone > 0) {
                                 markDirty();
                                 BlockState state = sw.getBlockState(pos);
@@ -1145,7 +1281,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                             return workDone;
                         }
                         sw.setBlockState(target.pos(), ModBlocks.FRAME.getDefaultState(), Block.NOTIFY_ALL);
-                        energy.amount -= ModConfig.DATA.energyPerFrame;
+                        consumeEnergy(frameEnergyCost);
                     }
                     if (target.type() == WorkType.FRAME_REPAIR) {
                         pendingFrameRepairs.removeFirst();
@@ -1179,6 +1315,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private double stepFrameRemoval(ServerWorld sw, double budget) {
+        long frameEnergyCost = getFrameEnergyCost();
         while (budget >= 1.0E-6) {
             BlockPos target = getNextFrameRemovalTarget(sw);
             if (target == null) {
@@ -1189,11 +1326,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             setActiveMiningTarget(new WorkTarget(target, WorkType.FRAME_REMOVE));
 
             if (budget < 1.0) return budget;
-            if (energy.amount < ModConfig.DATA.energyPerFrame) return budget;
+            if (energy.amount < frameEnergyCost) return budget;
             if (!sw.setBlockState(target, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL | Block.SKIP_DROPS)) return budget;
 
             recordRecentRenderTarget(sw, target);
-            energy.amount -= ModConfig.DATA.energyPerFrame;
+            consumeEnergy(frameEnergyCost);
             frameRemovalIndex++;
             clearActiveMiningTarget();
             budget -= 1.0;
@@ -1203,9 +1340,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private void finishFrameRemoval(ServerWorld sw) {
+        boolean finishReadyBeforeUnlock = isFinishEndpointReady(sw);
+        QuarryAreaRegistry.AreaBounds removedBounds = areaLocked
+                ? new QuarryAreaRegistry.AreaBounds(minX, maxX, minY, maxY, minZ, maxZ)
+                : null;
         frameRemovalActive = false;
         frameRemovalIndex = -1;
-        machinePhase = MachinePhase.IDLE;
+        machinePhase = MachinePhase.FINISH;
         clearActiveMiningTarget();
         clearStatusMessage();
         ChunkTickets.clearTickets(sw, pos, this);
@@ -1228,11 +1369,14 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         clearRediscoveryState();
         clearMiningTravelState();
         areaLocked = false;
-        // Keep terminal finish flag sticky until block is replaced.
+        finishEndpointTask = finishReadyBeforeUnlock;
         laserSubstate = LaserSubstate.NONE;
         gantrySubstate = GantrySubstate.NONE;
 
         updateStatusState(sw);
+        if (removedBounds != null) {
+            QuarryAreaRegistry.get(sw.getServer()).removeArea(sw, removedBounds);
+        }
         markDirty();
     }
 
@@ -1445,7 +1589,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (topY == Integer.MIN_VALUE) {
             debugLog("ensureMiningInit: no mineable target found, stopping");
             clientTargetPacked = 0L;
-            stopAndRemoveFrame();
+            beginAutoFinishFlow(sw);
             return;
         }
 
@@ -1469,7 +1613,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         if (!seekNextMineable(sw)) {
             clientTargetPacked = 0L;
-            stopAndRemoveFrame();
+            beginAutoFinishFlow(sw);
             return;
         }
         primeMiningPhaseFromFirstTarget(sw);
@@ -1480,7 +1624,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         WorkTarget firstTarget = getNextMiningTarget(sw);
         if (firstTarget == null) {
             clientTargetPacked = 0L;
-            stopAndRemoveFrame();
+            beginAutoFinishFlow(sw);
             return;
         }
 
@@ -1525,8 +1669,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private double stepMine(ServerWorld sw, double budget) {
+        double blockOpBudget = budget;
+        double movementBudget = getBlocksPerTick();
+        boolean chargedGantryTick = false;
         int bottom = sw.getBottomY();
-        while (budget > 1.0E-6) {
+        while (blockOpBudget > 1.0E-6) {
             MachinePhase previousPhase = machinePhase;
             LaserSubstate previousLaserSubstate = laserSubstate;
             GantrySubstate previousGantrySubstate = gantrySubstate;
@@ -1544,8 +1691,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                         continue;
                     }
                 }
-                beginReturnToOrigin(sw, ReturnPhase.FINISHING);
-                return budget;
+                beginAutoFinishFlow(sw);
+                return blockOpBudget;
             }
 
             boolean rediscoveryTarget = target.type() == WorkType.REDISCOVERY;
@@ -1588,22 +1735,31 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 laserSubstate = LaserSubstate.NONE;
                 Vec3d targetPos = Vec3d.ofCenter(target.pos());
                 double distance = getToolHeadPos().distanceTo(targetPos);
+                boolean longTravel = distance > 1.0;
+                if (!chargedGantryTick && !longTravel) {
+                    long miningEnergyPerOp = getRequiredEnergyForMiningPhase(sw);
+                    long plannedTickEnergy = getPlannedMiningEnergyPerTick(miningEnergyPerOp);
+                    if (plannedTickEnergy > 0L) {
+                        if (energy.amount < plannedTickEnergy) return Math.min(blockOpBudget, 1.0);
+                        consumeEnergy(plannedTickEnergy);
+                    }
+                    chargedGantryTick = true;
+                }
                 if (distance > 1.0E-6) {
-                    boolean longTravel = distance > 1.0;
                     if (gantrySubstate != GantrySubstate.FREEZE) {
                         double roundedDistance = Math.round(distance * 1000.0) / 1000.0;
                         if (distance > GANTRY_TRAVEL_LOG_MIN_DISTANCE
                                 && roundedDistance > GANTRY_TRAVEL_LOG_ROUNDED_MIN_DISTANCE
                                 && gantrySubstate != GantrySubstate.TRAVEL) {
                             debugLog("gantry travel start target={} distance={} budget={}",
-                                    target.pos(), String.format(java.util.Locale.ROOT, "%.3f", distance), String.format(java.util.Locale.ROOT, "%.3f", budget));
+                                    target.pos(), String.format(java.util.Locale.ROOT, "%.3f", distance), String.format(java.util.Locale.ROOT, "%.3f", blockOpBudget));
                         }
                         // Keep short (<=1 block) motion in MINE substate to avoid travel-state log churn.
                         gantrySubstate = longTravel ? GantrySubstate.TRAVEL : GantrySubstate.MINE;
                     }
-                    double moved = moveToolHeadTowards(targetPos, budget);
-                    budget -= moved;
-                    if (budget <= 1.0E-6) return 0.0;
+                    if (movementBudget <= 1.0E-6) return blockOpBudget;
+                    double moved = moveToolHeadTowards(targetPos, movementBudget);
+                    movementBudget -= moved;
                     if (getToolHeadPos().distanceTo(targetPos) > 1.0E-6) {
                         continue;
                     }
@@ -1616,10 +1772,10 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             }
 
             if (target.type() == WorkType.REDISCOVERY) {
-                double updatedBudget = applyRediscoveryLaserVerticalTravel(target, budget);
-                if (updatedBudget < budget - 1.0E-6) {
-                    budget = updatedBudget;
-                    if (budget <= 1.0E-6) return 0.0;
+                double updatedMovementBudget = applyRediscoveryLaserVerticalTravel(target, movementBudget);
+                if (updatedMovementBudget < movementBudget - 1.0E-6) {
+                    movementBudget = updatedMovementBudget;
+                    if (movementBudget <= 1.0E-6) return blockOpBudget;
                     continue;
                 }
             } else {
@@ -1633,10 +1789,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 rediscoveryServerVolumeOriginY = Double.NaN;
             }
 
-            if (budget < 1.0) return budget;
+            if (blockOpBudget < 1.0) return blockOpBudget;
 
             BlockState st = sw.getBlockState(target.pos());
-            if (!harvestBlock(sw, target.pos(), st)) return Math.min(budget, 1.0);
+            boolean chargeOnHarvest = !(chargedGantryTick && target.type() == WorkType.MINE && machinePhase == MachinePhase.GANTRY_MINE);
+            if (!harvestBlock(sw, target.pos(), st, chargeOnHarvest)) return Math.min(blockOpBudget, 1.0);
 
             if (machinePhase == MachinePhase.GANTRY_MINE && gantrySubstate != GantrySubstate.FREEZE) {
                 gantrySubstate = GantrySubstate.MINE;
@@ -1657,8 +1814,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 if (previousLayerY >= minY && layerY < minY) {
                     if (!reseedCursorForGantryPhase(sw)) {
                         clearActiveMiningTarget();
-                        beginReturnToOrigin(sw, ReturnPhase.FINISHING);
-                        return budget;
+                        beginAutoFinishFlow(sw);
+                        return blockOpBudget;
                     }
                 }
                 if (layerY < previousLayerY) {
@@ -1670,15 +1827,15 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                     drainRediscoveryQueue = nextDrain;
                 }
             }
-            budget -= 1.0;
+            blockOpBudget -= 1.0;
 
             if (target.type() == WorkType.MINE && !drainRediscoveryQueue && layerY < bottom) {
                 clientTargetPacked = 0L;
-                stopAndRemoveFrame();
+                beginAutoFinishFlow(sw);
                 return 0.0;
             }
         }
-        return budget;
+        return blockOpBudget;
     }
 
     private double applyRediscoveryLaserVerticalTravel(WorkTarget target, double budget) {
@@ -1961,7 +2118,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         return drops;
     }
 
-    private boolean harvestBlock(ServerWorld sw, BlockPos target, BlockState state) {
+    private boolean harvestBlock(ServerWorld sw, BlockPos target, BlockState state, boolean chargeOnHarvest) {
         if (state.isAir()) return true;
         if (isFrameSetupBlocked(sw, target, state)) {
             setStatusMessage("gui.quarry_reforged.status.message.frame_blocked", 0xFFE35D5D, -1L);
@@ -1971,8 +2128,8 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
         List<BlockPos> harvestPositions = collectHarvestPositions(sw, target, state);
         float hardness = state.getHardness(sw, target);
-        long cost = ModConfig.DATA.energyPerBlock + (long) (Math.max(0.0f, hardness) * ModConfig.DATA.hardnessEnergyScale);
-        if (energy.amount < cost) return false;
+        long cost = getMiningEnergyCost(hardness);
+        if (chargeOnHarvest && energy.amount < cost) return false;
 
         ItemStack tool = makeToolForDrops();
         List<ItemStack> drops = new ArrayList<>();
@@ -1991,27 +2148,64 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             if (shouldAutoExport(sw)) autoExport(sw);
             if (!output.canFitAll(drops) && !hasVoidOverflow) {
                 setStatusMessage("gui.quarry_reforged.status.message.inventory_full", 0xFFE35D5D, -1L);
-                setActive(false);
+                pauseForInventoryFull(sw);
                 return false;
             }
         }
 
         boolean removedAny = false;
+        int removedCount = 0;
         for (BlockPos harvestPos : harvestPositions) {
             BlockState harvestState = sw.getBlockState(harvestPos);
             if (harvestState.isAir()) continue;
             sw.syncWorldEvent(WorldEvents.BLOCK_BROKEN, harvestPos, Block.getRawIdFromState(harvestState));
             if (!sw.setBlockState(harvestPos, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL | Block.SKIP_DROPS)) return false;
             removedAny = true;
+            removedCount++;
         }
         if (!removedAny) return false;
 
         for (EntityInventoryDrop entityDrop : entityDrops) entityDrop.removeSource();
-        energy.amount -= cost;
+        if (chargeOnHarvest) {
+            consumeEnergy(cost);
+        }
+        if (removedCount > 0) {
+            blocksMined += removedCount;
+        }
         for (ItemStack drop : drops) output.insertAll(drop);
         if (shouldAutoExport(sw)) autoExport(sw);
         markDirty();
         return true;
+    }
+
+    private void pauseForInventoryFull(ServerWorld sw) {
+        boolean preferLaserIdle = machinePhase == MachinePhase.LASER_MINE
+                || laserSubstate == LaserSubstate.LASER_CLEAR_FRAME_AREA
+                || laserSubstate == LaserSubstate.LASER_MINE_REDISCOVERY
+                || (layerY != Integer.MIN_VALUE && layerY >= minY);
+
+        active = false;
+        frameRemovalActive = false;
+        returnPhase = ReturnPhase.NONE;
+        machinePhase = MachinePhase.IDLE;
+
+        if (preferLaserIdle) {
+            laserSubstate = LaserSubstate.LASER_MINE_IDLE;
+            gantrySubstate = GantrySubstate.NONE;
+        } else {
+            laserSubstate = LaserSubstate.NONE;
+            gantrySubstate = GantrySubstate.FREEZE;
+        }
+
+        BlockState bs = sw.getBlockState(pos);
+        if (bs.getBlock() instanceof BlockWithEntity
+                && bs.contains(QuarryBlock.ACTIVE)
+                && bs.get(QuarryBlock.ACTIVE)) {
+            sw.setBlockState(pos, bs.with(QuarryBlock.ACTIVE, false), Block.NOTIFY_ALL);
+        }
+
+        updateStatusState(sw);
+        syncState();
     }
 
     private List<BlockPos> collectHarvestPositions(ServerWorld sw, BlockPos target, BlockState state) {
@@ -2392,10 +2586,35 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     private Vec3d getToolHeadOriginPos() {
         if (!areaLocked) return Vec3d.ofCenter(pos);
 
-        int originX = MathHelper.clamp(pos.getX(), minX + 1, maxX - 1);
+        BlockPos nearestUpperCorner = getNearestUpperFrameCornerToQuarry();
+        int originX = nearestUpperCorner.getX();
         int originY = MathHelper.clamp(maxY - 3, minY + 1, maxY - 1);
-        int originZ = MathHelper.clamp(pos.getZ(), minZ + 1, maxZ - 1);
+        int originZ = nearestUpperCorner.getZ();
         return Vec3d.ofCenter(new BlockPos(originX, originY, originZ));
+    }
+
+    private BlockPos getNearestUpperFrameCornerToQuarry() {
+        int innerMinX = minX + 1;
+        int innerMaxX = maxX - 1;
+        int innerMinZ = minZ + 1;
+        int innerMaxZ = maxZ - 1;
+        BlockPos[] corners = new BlockPos[]{
+                new BlockPos(innerMinX, maxY, innerMinZ),
+                new BlockPos(innerMinX, maxY, innerMaxZ),
+                new BlockPos(innerMaxX, maxY, innerMinZ),
+                new BlockPos(innerMaxX, maxY, innerMaxZ)
+        };
+
+        BlockPos nearest = corners[0];
+        double bestDistSq = nearest.getSquaredDistance(pos);
+        for (int i = 1; i < corners.length; i++) {
+            double distSq = corners[i].getSquaredDistance(pos);
+            if (distSq < bestDistSq) {
+                nearest = corners[i];
+                bestDistSq = distSq;
+            }
+        }
+        return nearest;
     }
 
     private Vec3d getToolHeadPos() {
@@ -2459,7 +2678,14 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 clearActiveMiningTarget();
                 return null;
             }
-        } else if (!isMineableTarget(sw, targetPos, sw.getBlockState(targetPos))) {
+        } else if (type == WorkType.MINE || type == WorkType.FRAME_CLEARANCE) {
+            BlockState targetState = sw.getBlockState(targetPos);
+            if (!isMineableTraversalTarget(sw, targetPos, targetState)) {
+                clearActiveMiningTarget();
+                return null;
+            }
+        } else {
+            // Frame placement/repair targets are not valid mining-phase active targets.
             clearActiveMiningTarget();
             return null;
         }
@@ -2529,6 +2755,55 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         markDirty();
     }
 
+    private void beginAutoFinishFlow(ServerWorld sw) {
+        if (!areaLocked) return;
+        if (returnPhase != ReturnPhase.NONE || frameRemovalActive) return;
+        if (!isFinishMiningDrained(sw)) return;
+
+        double distanceToOrigin = getToolHeadPos().distanceTo(getToolHeadOriginPos());
+        if (distanceToOrigin > 1.0E-6) {
+            beginReturnToOrigin(sw, ReturnPhase.FINISHING);
+            return;
+        }
+
+        startAutoFrameRemoval(sw);
+    }
+
+    private void startAutoFrameRemoval(ServerWorld sw) {
+        if (!areaLocked) return;
+        if (frameRemovalActive || returnPhase != ReturnPhase.NONE) return;
+        if (!isFinishEndpointReady(sw)) return;
+
+        if (cachedFrame == null) cachedFrame = computeFrame();
+        cachedFrameRemoval = null;
+        frameRemovalIndex = 0;
+        frameRemovalActive = true;
+        machinePhase = MachinePhase.REMOVE_FRAME;
+        active = false;
+        frameWorkBudget = 0.0;
+        miningBudget = Math.min(miningBudget, 1.0);
+        clearActiveMiningTarget();
+        laserSubstate = LaserSubstate.NONE;
+        gantrySubstate = GantrySubstate.NONE;
+        clearStatusMessage();
+        updateStatusState(sw);
+        markDirty();
+    }
+
+    private boolean isFinishEndpointReady(ServerWorld sw) {
+        if (!isFinishMiningDrained(sw)) return false;
+        return getToolHeadPos().distanceTo(getToolHeadOriginPos()) <= 1.0E-6;
+    }
+
+    private boolean isFinishMiningDrained(ServerWorld sw) {
+        if (!areaLocked) return false;
+        if (findHighestMineableY(sw) != Integer.MIN_VALUE) return false;
+        if (hasPendingRediscoveryWork()) return false;
+        if (drainRediscoveryQueue) return false;
+        if (peekRediscoveryTarget(sw) != null) return false;
+        return true;
+    }
+
     private void stepReturnToOrigin(ServerWorld sw) {
         if (machinePhase == MachinePhase.GANTRY_MINE && returnPhase != ReturnPhase.NONE) {
             gantrySubstate = GantrySubstate.TRAVEL;
@@ -2552,10 +2827,11 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         if (completedPhase == ReturnPhase.FINISHING) {
             machinePhase = MachinePhase.FINISH;
             gantrySubstate = GantrySubstate.TRAVEL;
-            finishEndpointTask = true;
+            finishEndpointTask = false;
             clearStatusMessage();
             updateStatusState(sw);
-            debugLog("return complete FINISH gantry at origin");
+            debugLog("return complete FINISH gantry at origin; starting auto frame removal");
+            startAutoFrameRemoval(sw);
             return;
         }
 
@@ -2580,11 +2856,15 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     private long getRequiredEnergyForNextOperation(ServerWorld sw) {
         if (returnPhase != ReturnPhase.NONE) return 0L;
-        if (frameRemovalActive) return ModConfig.DATA.energyPerFrame;
+        if (frameRemovalActive) return getFrameEnergyCost();
         if (!active || !areaLocked) return 0L;
         if (cachedFrame == null) cachedFrame = computeFrame();
-        if (frameIndex < cachedFrame.size() || !pendingFrameRepairs.isEmpty()) return ModConfig.DATA.energyPerFrame;
-        return getRequiredEnergyForMiningPhase(sw);
+        if (frameIndex < cachedFrame.size() || !pendingFrameRepairs.isEmpty()) return getFrameEnergyCost();
+        long miningEnergyPerOp = getRequiredEnergyForMiningPhase(sw);
+        if (machinePhase == MachinePhase.GANTRY_MINE && gantrySubstate == GantrySubstate.MINE) {
+            return getPlannedMiningEnergyPerTick(miningEnergyPerOp);
+        }
+        return miningEnergyPerOp;
     }
 
     @Nullable
@@ -2639,35 +2919,46 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         return speed;
     }
 
-    private int getMiningCycleTicks() {
-        int speed = Math.min(4, getSpeedCount());
-        return switch (speed) {
-            case 1, 2, 3 -> 5;
-            case 4 -> 1;
-            default -> 10;
+    private OpPlan OpPlan(long energyPerOperation) {
+        int speed = Math.min(MAX_SPEED_UPGRADES, getSpeedCount());
+        double multiplier = switch (speed) {
+            case 1 -> 2.0;
+            case 2 -> 4.0;
+            case 3 -> 8.0;
+            case 4 -> 20.0;
+            default -> 1.0;
         };
+        double minBps = Math.max(0.01, ModConfig.DATA.minBlocksPerSecond);
+        double maxBps = Math.max(minBps, ModConfig.DATA.maxBlocksPerSecond);
+        double blocksPerSecond = Math.min(maxBps, minBps * multiplier);
+        double blocksPerTick = blocksPerSecond / 20.0;
+        long normalizedEnergyPerOperation = toEvenWholeEnergy(energyPerOperation);
+        long plannedEnergyPerTick = toEvenWholeEnergy(MathHelper.ceil(Math.max(0.0, blocksPerTick * normalizedEnergyPerOperation)));
+        long actualEnergyPerTick = toEvenWholeEnergy(Math.max(energySpentThisTick, energySpentLastTick));
+        return new OpPlan(blocksPerSecond, blocksPerTick, normalizedEnergyPerOperation, plannedEnergyPerTick, actualEnergyPerTick);
     }
 
-    private int getBlocksPerMiningCycle() {
-        int speed = Math.min(4, getSpeedCount());
-        return switch (speed) {
-            case 2 -> 2;
-            case 3 -> 4;
-            case 4 -> 2;
-            default -> 1;
-        };
+    private OpPlan OpPlan() {
+        return OpPlan(requiredEnergyForNextOp);
+    }
+
+    private long getPlannedMiningEnergyPerTick(long energyPerOperation) {
+        return OpPlan(energyPerOperation).plannedEnergyPerTick();
     }
 
     private double getBlocksPerSecond() {
-        return 20.0 * getBlocksPerMiningCycle() / getMiningCycleTicks();
+        return OpPlan().blocksPerSecond();
     }
 
     private double getBlocksPerTick() {
-        return getBlocksPerSecond() / 20.0;
+        return OpPlan().blocksPerTick();
     }
 
     public void stopAndRemoveFrame() {
         if (!(world instanceof ServerWorld sw)) return;
+        QuarryAreaRegistry.AreaBounds finishedBounds = areaLocked
+                ? new QuarryAreaRegistry.AreaBounds(minX, maxX, minY, maxY, minZ, maxZ)
+                : null;
         updateStatusState(sw);
         if (insufficientEnergyForNextOp) return;
 
@@ -2698,12 +2989,17 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         clearRediscoveryState();
         clearMiningTravelState();
         areaLocked = false;
+        areaRegistryTrackingActive = false;
         finishEndpointTask = true;
         machinePhase = MachinePhase.FINISH;
         laserSubstate = LaserSubstate.NONE;
         gantrySubstate = GantrySubstate.TRAVEL;
         clearStatusMessage();
         updateStatusState(sw);
+        if (finishedBounds != null) {
+            Direction facing = getCachedState().contains(QuarryBlock.FACING) ? getCachedState().get(QuarryBlock.FACING) : Direction.NORTH;
+            QuarryAreaRegistry.get(sw.getServer()).markFinished(sw, finishedBounds, owner, pos, facing);
+        }
         markDirty();
     }
 
@@ -2727,7 +3023,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     }
 
     private void updateStatusState(ServerWorld sw) {
-        requiredEnergyForNextOp = getRequiredEnergyForNextOperation(sw);
+        requiredEnergyForNextOp = toEvenWholeEnergy(getRequiredEnergyForNextOperation(sw));
         insufficientEnergyForNextOp = (active || frameRemovalActive) && requiredEnergyForNextOp > 0L && energy.amount < requiredEnergyForNextOp;
 
         if (machinePhase == MachinePhase.NO_POWER) {
@@ -2766,7 +3062,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         return switch (machinePhase) {
             case BUILD_FRAME, FRAME_REPAIR -> areaLocked ? RenderChannelPhase.RENDER_FRAME_WORK : RenderChannelPhase.RENDER_NONE;
             case LASER_MINE -> areaLocked ? RenderChannelPhase.RENDER_LASER_ACTIVE : RenderChannelPhase.RENDER_NONE;
-            case REMOVE_FRAME -> areaLocked ? RenderChannelPhase.RENDER_REMOVE_FRAME : RenderChannelPhase.RENDER_NONE;
+            case REMOVE_FRAME -> areaLocked ? RenderChannelPhase.RENDER_LASER_ACTIVE : RenderChannelPhase.RENDER_NONE;
             case GANTRY_MINE, STOPPING -> areaLocked ? renderChannelForGantrySubstate(gantrySubstate) : RenderChannelPhase.RENDER_NONE;
             case FINISH -> {
                 if (!areaLocked) yield RenderChannelPhase.RENDER_NONE;
@@ -2823,6 +3119,19 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     private void syncState() {
         if (world instanceof ServerWorld sw) {
+            QuarryAreaRegistry registry = QuarryAreaRegistry.get(sw.getServer());
+            registry.maybePrune();
+            if (areaLocked) {
+                if (!areaRegistryTrackingActive || areaRegistryTrackedPhase != machinePhase) {
+                    QuarryAreaRegistry.AreaBounds bounds = new QuarryAreaRegistry.AreaBounds(minX, maxX, minY, maxY, minZ, maxZ);
+                    Direction facing = getCachedState().contains(QuarryBlock.FACING) ? getCachedState().get(QuarryBlock.FACING) : Direction.NORTH;
+                    registry.recordPhaseChange(sw, bounds, machinePhase.name(), owner, pos, facing);
+                    areaRegistryTrackingActive = true;
+                    areaRegistryTrackedPhase = machinePhase;
+                }
+            } else {
+                areaRegistryTrackingActive = false;
+            }
             updateRenderChannelState(sw);
             debugLogStateSnapshotChanges();
             markDirty();
@@ -2907,21 +3216,39 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     public NbtCompound createItemStateNbt() {
         NbtCompound nbt = new NbtCompound();
-        writeNbt(nbt);
-        nbt.remove("x");
-        nbt.remove("y");
-        nbt.remove("z");
-        nbt.remove("id");
+        Inventories.writeNbt(nbt, output.items);
+        nbt.put("Upgrades", upgrades.toNbt());
+        nbt.put("EnergyItems", energyItems.toNbt());
+        nbt.putString("RedstoneMode", redstoneMode.name());
+        nbt.putBoolean("AutoExportEnabled", autoExportEnabled);
+        nbt.putIntArray("UpgradeSideModes", encodeModes(upgradeSideModes));
+        nbt.putIntArray("OutputSideModes", encodeModes(outputSideModes));
+        nbt.putLong("Energy", energy.amount);
         return nbt;
     }
 
     public void applyItemStateNbt(NbtCompound nbt) {
         if (nbt == null) return;
-        NbtCompound copy = nbt.copy();
-        copy.putInt("x", pos.getX());
-        copy.putInt("y", pos.getY());
-        copy.putInt("z", pos.getZ());
-        readNbt(copy);
+        Inventories.readNbt(nbt, output.items);
+        upgrades.readNbt(nbt.getCompound("Upgrades"));
+        energyItems.readNbt(nbt.getCompound("EnergyItems"));
+
+        if (nbt.contains("RedstoneMode")) {
+            try {
+                redstoneMode = MachineRedstoneMode.valueOf(nbt.getString("RedstoneMode"));
+            } catch (IllegalArgumentException ignored) {
+                redstoneMode = MachineRedstoneMode.IGNORED;
+            }
+        }
+        autoExportEnabled = nbt.contains("AutoExportEnabled") && nbt.getBoolean("AutoExportEnabled");
+        mode = autoExportEnabled ? Mode.EXPORT : Mode.BUFFER;
+        decodeModes(nbt.contains("UpgradeSideModes") ? nbt.getIntArray("UpgradeSideModes") : null, upgradeSideModes, ItemIoGroup.UPGRADES);
+        decodeModes(nbt.contains("OutputSideModes") ? nbt.getIntArray("OutputSideModes") : null, outputSideModes, ItemIoGroup.OUTPUT);
+        if (nbt.contains("Energy")) {
+            long storedEnergy = nbt.getLong("Energy");
+            energy.amount = Math.max(0L, Math.min(storedEnergy, energy.getCapacity()));
+        }
+
         markDirty();
         if (world instanceof ServerWorld sw) {
             BlockState state = sw.getBlockState(pos);
@@ -2942,6 +3269,9 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     public int getFrameTopY() { return maxY; }
 
     public String getDisplayStatus() {
+        if (machinePhase == MachinePhase.BUILD_FRAME) {
+            return Text.translatable("gui.quarry_reforged.status.building").getString();
+        }
         String key = switch (statusState) {
             case NO_POWER -> "gui.quarry_reforged.status.no_power";
             case REPAIRING -> "gui.quarry_reforged.status.repairing";
@@ -2964,7 +3294,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             return Text.translatable("gui.quarry_reforged.status.message.phase.stopping").getString();
         }
         if (machinePhase == MachinePhase.FINISH || returnPhase == ReturnPhase.FINISHING) {
-            return Text.translatable("gui.quarry_reforged.status.message.phase.finish").getString();
+            return Text.translatable("gui.quarry_reforged.status.message.phase.finish", formatGroupedLong(blocksMined)).getString();
         }
         return switch (machinePhase) {
             case BUILD_FRAME -> Text.translatable("gui.quarry_reforged.status.message.phase.build_frame").getString();
@@ -2977,26 +3307,49 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
                 case NONE -> Text.translatable("gui.quarry_reforged.status.message.phase.laser_mine").getString();
             };
             case GANTRY_MINE -> switch (gantrySubstate) {
-                case MINE -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine.mine", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
-                case TRAVEL -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine.travel", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
-                case FREEZE -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine.freeze", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
-                case NONE -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine", formatEnergyPerTick(getCurrentGantryEnergyPerTick())).getString();
+                case MINE, TRAVEL, NONE -> Text.translatable(
+                        "gui.quarry_reforged.status.message.phase.gantry_mine",
+                        formatEnergyPerTick(getCurrentGantryEnergyPerTick()),
+                        formatBlocksPerSecond(getBlocksPerSecond())
+                ).getString();
+                case FREEZE -> Text.translatable("gui.quarry_reforged.status.message.phase.gantry_mine.freeze").getString();
             };
             case STOPPING -> Text.translatable("gui.quarry_reforged.status.message.phase.stopping").getString();
-            case FINISH -> Text.translatable("gui.quarry_reforged.status.message.phase.finish").getString();
+            case FINISH -> Text.translatable("gui.quarry_reforged.status.message.phase.finish", formatGroupedLong(blocksMined)).getString();
             case NO_POWER -> Text.translatable("gui.quarry_reforged.status.message.no_power", energy.amount, requiredEnergyForNextOp).getString();
             default -> Text.translatable("gui.quarry_reforged.status.message.idle").getString();
         };
     }
 
     private double getCurrentGantryEnergyPerTick() {
-        if (machinePhase != MachinePhase.GANTRY_MINE) return 0.0;
-        if (gantrySubstate != GantrySubstate.MINE) return 0.0;
-        return Math.max(0.0, requiredEnergyForNextOp * getBlocksPerTick());
+        if (machinePhase != MachinePhase.GANTRY_MINE) return 0L;
+        if (gantrySubstate == GantrySubstate.FREEZE) return 0L;
+        return OpPlan().actualEnergyPerTick();
     }
 
     private String formatEnergyPerTick(double value) {
-        return String.format(java.util.Locale.ROOT, "%.2f", value);
+        long whole = Math.max(0L, Math.round(value));
+        return Long.toString(toEvenWholeEnergy(whole));
+    }
+
+    private String formatBlocksPerSecond(double value) {
+        return String.format(java.util.Locale.ROOT, "%.2f", Math.max(0.0, value));
+    }
+
+    private String formatGroupedLong(long value) {
+        return String.format(java.util.Locale.US, "%,d", Math.max(0L, value));
+    }
+
+    private long getRemainingFrameBlocksForFinishMessage() {
+        if (!areaLocked || world == null) return 0L;
+        if (cachedFrame == null) cachedFrame = computeFrame();
+        long remaining = 0L;
+        for (BlockPos framePos : cachedFrame) {
+            if (world.getBlockState(framePos).isOf(ModBlocks.FRAME)) {
+                remaining++;
+            }
+        }
+        return remaining;
     }
 
     public int getDisplayStatusColor() {
@@ -3082,6 +3435,67 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
     public void setDebugInterpolationEnabled(boolean enabled) {
         debugInterpolationEnabled = enabled;
         syncState();
+    }
+
+    public void setDebugRediscoveryVolumeRenderEnabled(boolean enabled) {
+        debugRediscoveryVolumeRenderEnabled = enabled;
+        syncState();
+    }
+
+    public boolean isDebugRediscoveryVolumeRenderEnabledClient() {
+        return debugRediscoveryVolumeRenderEnabled;
+    }
+
+    public PerfSnapshot getPerfSnapshot() {
+        return new PerfSnapshot(
+                perfLastTickNanos,
+                perfLastWindowAvgNanos,
+                perfLastWindowMaxNanos,
+                perfLastWindowSamples,
+                perfLastWindowStartTick,
+                perfLastWindowEndTick
+        );
+    }
+
+    public void resetPerfStats() {
+        perfWindowStartTick = Long.MIN_VALUE;
+        perfWindowAccumulatedNanos = 0L;
+        perfWindowMaxNanos = 0L;
+        perfWindowSamples = 0;
+        perfLastTickNanos = 0L;
+        perfLastWindowAvgNanos = 0L;
+        perfLastWindowMaxNanos = 0L;
+        perfLastWindowSamples = 0;
+        perfLastWindowStartTick = Long.MIN_VALUE;
+        perfLastWindowEndTick = Long.MIN_VALUE;
+    }
+
+    private void recordPerfSample(long worldTick, long elapsedNanos) {
+        if (!ModConfig.DATA.debug) return;
+        long safeNanos = Math.max(0L, elapsedNanos);
+        perfLastTickNanos = safeNanos;
+
+        if (perfWindowStartTick == Long.MIN_VALUE) {
+            perfWindowStartTick = worldTick;
+        }
+
+        perfWindowAccumulatedNanos += safeNanos;
+        perfWindowSamples++;
+        if (safeNanos > perfWindowMaxNanos) {
+            perfWindowMaxNanos = safeNanos;
+        }
+
+        if (worldTick - perfWindowStartTick >= 20L * 20L) {
+            perfLastWindowStartTick = perfWindowStartTick;
+            perfLastWindowEndTick = worldTick;
+            perfLastWindowSamples = perfWindowSamples;
+            perfLastWindowAvgNanos = perfWindowSamples <= 0 ? 0L : (perfWindowAccumulatedNanos / perfWindowSamples);
+            perfLastWindowMaxNanos = perfWindowMaxNanos;
+            perfWindowStartTick = worldTick + 1L;
+            perfWindowAccumulatedNanos = 0L;
+            perfWindowSamples = 0;
+            perfWindowMaxNanos = 0L;
+        }
     }
 
     public RediscoveryDebugSnapshot getRediscoveryDebugSnapshot(ServerWorld sw) {
@@ -3234,6 +3648,38 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         return areaLocked;
     }
 
+    @Nullable
+    public QuarryAreaRegistry.AreaBounds getLockedAreaBoundsServer() {
+        if (!areaLocked) return null;
+        return new QuarryAreaRegistry.AreaBounds(minX, maxX, minY, maxY, minZ, maxZ);
+    }
+
+    public boolean forceAdminStopAndUnlock(ServerWorld sw) {
+        if (!areaLocked) return false;
+
+        setActive(false);
+        frameRemovalActive = false;
+        frameRemovalIndex = -1;
+        returnPhase = ReturnPhase.NONE;
+        areaLocked = false;
+        areaRegistryTrackingActive = false;
+        areaRegistryTrackedPhase = MachinePhase.NO_POWER;
+        finishEndpointTask = false;
+        clearPlacementAreaPreview();
+        clearResumeState();
+        clearStatusMessage();
+
+        if (machinePhase != MachinePhase.NO_POWER) {
+            machinePhase = MachinePhase.IDLE;
+        }
+        laserSubstate = LaserSubstate.NONE;
+        gantrySubstate = GantrySubstate.NONE;
+        updateStatusState(sw);
+        markDirty();
+        syncState();
+        return true;
+    }
+
     public int getInnerMinX() {
         return minX + 1;
     }
@@ -3256,6 +3702,36 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     public int getInnerMaxZ() {
         return maxZ - 1;
+    }
+
+    public boolean hasPlacementAreaPreviewClient() {
+        return placementAreaPreviewActive && !areaLocked;
+    }
+
+    @Nullable
+    public QuarryAreaRegistry.AreaBounds getPlacementAreaPreviewBoundsClient() {
+        if (!hasPlacementAreaPreviewClient()) return null;
+        return new QuarryAreaRegistry.AreaBounds(
+                placementPreviewMinX,
+                placementPreviewMaxX,
+                placementPreviewMinY,
+                placementPreviewMaxY,
+                placementPreviewMinZ,
+                placementPreviewMaxZ
+        );
+    }
+
+    public boolean clearPlacementPreviewForAreaServer(QuarryAreaRegistry.AreaBounds bounds) {
+        if (areaLocked || !placementAreaPreviewActive) return false;
+        if (placementPreviewMinX != bounds.minX() || placementPreviewMaxX != bounds.maxX()
+                || placementPreviewMinY != bounds.minY() || placementPreviewMaxY != bounds.maxY()
+                || placementPreviewMinZ != bounds.minZ() || placementPreviewMaxZ != bounds.maxZ()) {
+            return false;
+        }
+        clearPlacementAreaPreview();
+        markDirty();
+        syncState();
+        return true;
     }
 
     public boolean shouldUseTopLaserClient() {
@@ -3308,11 +3784,52 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
 
     public List<BlockPos> getClientUpcomingFrameTargets(int count) {
         if (!areaLocked || count <= 0) return List.of();
-        if (cachedFrame == null) cachedFrame = computeFrame();
-        if (frameIndex < 0 || frameIndex >= cachedFrame.size()) return List.of();
+        LinkedHashSet<BlockPos> orderedTargets = new LinkedHashSet<>(count);
 
-        int end = Math.min(cachedFrame.size(), frameIndex + count);
-        return new ArrayList<>(cachedFrame.subList(frameIndex, end));
+        if (machinePhase == MachinePhase.FRAME_REPAIR) {
+            if (renderChannelActiveTargetPacked != 0L) {
+                orderedTargets.add(BlockPos.fromLong(renderChannelActiveTargetPacked));
+            }
+
+            if (activeMiningTargetPacked != 0L
+                    && activeMiningTargetType >= 0
+                    && activeMiningTargetType < WorkType.values().length) {
+                WorkType activeType = WorkType.values()[activeMiningTargetType];
+                if (activeType == WorkType.FRAME_REPAIR || activeType == WorkType.FRAME_PLACE) {
+                    orderedTargets.add(BlockPos.fromLong(activeMiningTargetPacked));
+                }
+            }
+
+            for (BlockPos repairPos : pendingFrameRepairs) {
+                if (orderedTargets.size() >= count) break;
+                orderedTargets.add(repairPos);
+            }
+
+            if (orderedTargets.size() < count) {
+                if (cachedFrame == null) cachedFrame = computeFrame();
+                if (world != null) {
+                    for (BlockPos framePos : cachedFrame) {
+                        if (orderedTargets.size() >= count) break;
+                        if (!world.getBlockState(framePos).isOf(ModBlocks.FRAME)) {
+                            orderedTargets.add(framePos);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (orderedTargets.size() < count) {
+            if (cachedFrame == null) cachedFrame = computeFrame();
+            int start = Math.max(0, frameIndex);
+            if (start < cachedFrame.size()) {
+                int end = Math.min(cachedFrame.size(), start + count);
+                for (int i = start; i < end && orderedTargets.size() < count; i++) {
+                    orderedTargets.add(cachedFrame.get(i));
+                }
+            }
+        }
+
+        return orderedTargets.isEmpty() ? List.of() : new ArrayList<>(orderedTargets);
     }
 
     public boolean isClientFramePlanned(BlockPos pos) {
@@ -3424,6 +3941,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         nbt.putInt("MaxY", maxY);
         nbt.putInt("MinZ", minZ);
         nbt.putInt("MaxZ", maxZ);
+        nbt.putBoolean("PlacementAreaPreviewActive", placementAreaPreviewActive);
+        nbt.putInt("PlacementPreviewMinX", placementPreviewMinX);
+        nbt.putInt("PlacementPreviewMaxX", placementPreviewMaxX);
+        nbt.putInt("PlacementPreviewMinY", placementPreviewMinY);
+        nbt.putInt("PlacementPreviewMaxY", placementPreviewMaxY);
+        nbt.putInt("PlacementPreviewMinZ", placementPreviewMinZ);
+        nbt.putInt("PlacementPreviewMaxZ", placementPreviewMaxZ);
 
         nbt.putInt("FrameClearanceIndex", frameClearanceIndex);
         nbt.putInt("FrameIndex", frameIndex);
@@ -3457,6 +3981,9 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         nbt.putString("StatusMessage", statusMessage);
         nbt.putInt("StatusMessageColor", statusMessageColor);
         nbt.putLong("StatusMessageUntilTick", statusMessageUntilTick);
+        nbt.putLong("EnergySpentThisTick", energySpentThisTick);
+        nbt.putLong("EnergySpentLastTick", energySpentLastTick);
+        nbt.putLong("BlocksMined", blocksMined);
         nbt.putBoolean("DebugVisualPreview", debugVisualPreview);
         nbt.putBoolean("DebugHasForcedRenderPhase", debugForcedRenderPhase != null);
         if (debugForcedRenderPhase != null) {
@@ -3465,6 +3992,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         nbt.putBoolean("DebugFreezeAnimation", debugFreezeAnimation);
         nbt.putLong("DebugFrozenAnimationTick", debugFrozenAnimationTick);
         nbt.putBoolean("DebugInterpolationEnabled", debugInterpolationEnabled);
+        nbt.putBoolean("DebugRediscoveryVolumeRenderEnabled", debugRediscoveryVolumeRenderEnabled);
         nbt.putString("RenderChannelPhase", renderChannelPhase.name());
         nbt.putLong("RenderChannelPhaseStartedTick", renderChannelPhaseStartedTick);
         nbt.putLong("RenderChannelStateTick", renderChannelStateTick);
@@ -3541,6 +4069,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         maxY = nbt.getInt("MaxY");
         minZ = nbt.getInt("MinZ");
         maxZ = nbt.getInt("MaxZ");
+        placementAreaPreviewActive = nbt.getBoolean("PlacementAreaPreviewActive");
+        placementPreviewMinX = nbt.getInt("PlacementPreviewMinX");
+        placementPreviewMaxX = nbt.getInt("PlacementPreviewMaxX");
+        placementPreviewMinY = nbt.getInt("PlacementPreviewMinY");
+        placementPreviewMaxY = nbt.getInt("PlacementPreviewMaxY");
+        placementPreviewMinZ = nbt.getInt("PlacementPreviewMinZ");
+        placementPreviewMaxZ = nbt.getInt("PlacementPreviewMaxZ");
 
         frameClearanceIndex = nbt.getInt("FrameClearanceIndex");
         frameIndex = nbt.getInt("FrameIndex");
@@ -3572,10 +4107,13 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         String storedStatusState = nbt.contains("StatusState") ? nbt.getString("StatusState") : StatusState.IDLE.name();
         statusState = StatusState.valueOf(storedStatusState);
         insufficientEnergyForNextOp = nbt.getBoolean("InsufficientEnergyForNextOp");
-        requiredEnergyForNextOp = nbt.getLong("RequiredEnergyForNextOp");
+        requiredEnergyForNextOp = toEvenWholeEnergy(nbt.getLong("RequiredEnergyForNextOp"));
         statusMessage = nbt.getString("StatusMessage");
         statusMessageColor = nbt.getInt("StatusMessageColor");
         statusMessageUntilTick = nbt.getLong("StatusMessageUntilTick");
+        energySpentThisTick = toEvenWholeEnergy(nbt.getLong("EnergySpentThisTick"));
+        energySpentLastTick = toEvenWholeEnergy(nbt.getLong("EnergySpentLastTick"));
+        blocksMined = Math.max(0L, nbt.getLong("BlocksMined"));
         debugVisualPreview = nbt.getBoolean("DebugVisualPreview");
         if (nbt.getBoolean("DebugHasForcedRenderPhase") && nbt.contains("DebugForcedRenderPhase")) {
             try {
@@ -3590,6 +4128,7 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
         debugFreezeAnimation = nbt.getBoolean("DebugFreezeAnimation");
         debugFrozenAnimationTick = nbt.getLong("DebugFrozenAnimationTick");
         debugInterpolationEnabled = !nbt.contains("DebugInterpolationEnabled") || nbt.getBoolean("DebugInterpolationEnabled");
+        debugRediscoveryVolumeRenderEnabled = nbt.getBoolean("DebugRediscoveryVolumeRenderEnabled");
         String storedRenderChannelPhase = nbt.contains("RenderChannelPhase") ? nbt.getString("RenderChannelPhase") : RenderChannelPhase.RENDER_NONE.name();
         try {
             renderChannelPhase = RenderChannelPhase.valueOf(storedRenderChannelPhase);
@@ -3670,6 +4209,21 @@ public class QuarryBlockEntity extends BlockEntity implements ExtendedScreenHand
             @Nullable BlockPos rediscoveryQueueHead,
             @Nullable BlockPos activeTargetPos,
             @Nullable String activeTargetType
+    ) {}
+    public record PerfSnapshot(
+            long lastTickNanos,
+            long lastWindowAvgNanos,
+            long lastWindowMaxNanos,
+            int lastWindowSamples,
+            long lastWindowStartTick,
+            long lastWindowEndTick
+    ) {}
+    private record OpPlan(
+            double blocksPerSecond,
+            double blocksPerTick,
+            long energyPerOperation,
+            long plannedEnergyPerTick,
+            long actualEnergyPerTick
     ) {}
     private enum ReturnPhase { NONE, STOPPING, FINISHING }
     private enum WorkType { FRAME_PLACE, FRAME_REPAIR, FRAME_CLEARANCE, FRAME_REMOVE, MINE, REDISCOVERY, REDISCOVERY_INSET }

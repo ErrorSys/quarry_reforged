@@ -23,8 +23,14 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 public class QuarryScreen extends HandledScreen<QuarryScreenHandler> {
+    private static final Pattern LEGACY_FORMATTING_CODE = Pattern.compile("(?i)\u00A7[0-9A-FK-OR]");
+    private static final Pattern TAG_FORMATTING_CODE = Pattern.compile("(?i)</?[a-z_]+>");
+    private static final Pattern TRAILING_STATUS_ANIM_MARKER = Pattern.compile("(?is)^(?<base>.*)(?<marker>(?:\\[\\[anim_dot\\]\\]|\\[\\[anim_sq\\]\\]))(?<suffix>(?:\u00A7[0-9A-FK-OR])*)(?<ws>\\s*)$");
+    private static final String HEADER_MARKER_BAR = "[[hdr_bar]]";
+    private static final String HEADER_MARKER_BAR_SLOW = "[[hdr_bar_slow]]";
     // Base template layout. Adjust these constants first when rebuilding the UI.
     private static final int OUTER_BG = 0xFF1A1F2A;
     private static final int PANEL_BG = 0xFF232B39;
@@ -298,10 +304,19 @@ public class QuarryScreen extends HandledScreen<QuarryScreenHandler> {
         autoExportBtn.active = selectedIoGroup == ItemIoGroup.OUTPUT;
 
         if (activeTab == ScreenTab.MAIN) {
-            drawCenteredString(context, quarry.getDisplayStatus(), this.x + STATUS_X + STATUS_W / 2, this.y + STATUS_Y + STATUS_TEXT_Y_OFFSET, TEXT);
-            drawCenteredScaledString(
+            long statusTick = quarry.getWorld() != null ? quarry.getWorld().getTime() : 0L;
+            String animatedStatus = animateStatusBracketDots(quarry.getDisplayStatus(), statusTick);
+            drawCenteredString(context, animatedStatus, this.x + STATUS_X + STATUS_W / 2, this.y + STATUS_Y + STATUS_TEXT_Y_OFFSET, TEXT);
+            String sourceStatusMessage = quarry.getDisplayStatusMessage();
+            String rawStatusMessage = trimMultilinePreservingAnimMarkers(sourceStatusMessage, (STATUS_W - 8) * 2);
+            String animatedStatusMessage = trimMultilinePreservingAnimMarkers(
+                    animateStatusEllipsis(sourceStatusMessage, statusTick),
+                    (STATUS_W - 8) * 2
+            );
+            drawCenteredScaledStringWithEllipsisAnchor(
                     context,
-                    trimMultiline(quarry.getDisplayStatusMessage(), (STATUS_W - 8) * 2),
+                    rawStatusMessage,
+                    animatedStatusMessage,
                     this.x + STATUS_X + STATUS_W / 2,
                     this.y + STATUS_Y + STATUS_MESSAGE_Y_OFFSET,
                     quarry.getDisplayStatusColor(),
@@ -596,6 +611,32 @@ public class QuarryScreen extends HandledScreen<QuarryScreenHandler> {
         context.getMatrices().pop();
     }
 
+    private void drawCenteredScaledStringWithEllipsisAnchor(DrawContext context, String rawText, String animatedText, int centerX, int y, int color, float scale) {
+        context.getMatrices().push();
+        context.getMatrices().scale(scale, scale, 1.0f);
+        float inv = 1.0f / scale;
+        String[] rawLines = normalizeNewlines(rawText).split("\\R", -1);
+        String[] animatedLines = normalizeNewlines(animatedText).split("\\R", -1);
+        int lineCount = Math.max(rawLines.length, animatedLines.length);
+        int lineHeight = textRenderer.fontHeight + 1;
+        int totalHeight = (lineCount - 1) * lineHeight;
+        int drawY = Math.round((y - totalHeight * scale / 2.0f) * inv);
+
+        for (int i = 0; i < lineCount; i++) {
+            String rawLine = i < rawLines.length ? rawLines[i] : "";
+            String animatedLine = i < animatedLines.length ? animatedLines[i] : "";
+            int drawX;
+            String anchoredBase = extractStatusAnimBase(rawLine);
+            if (anchoredBase != null && !isFormattingOnly(anchoredBase)) {
+                drawX = Math.round(centerX * inv - textRenderer.getWidth(anchoredBase) / 2.0f);
+            } else {
+                drawX = Math.round(centerX * inv - textRenderer.getWidth(animatedLine) / 2.0f);
+            }
+            context.drawText(textRenderer, animatedLine, drawX, drawY + i * lineHeight, color, false);
+        }
+        context.getMatrices().pop();
+    }
+
     private String trim(String text, int width) {
         return textRenderer.trimToWidth(text, width);
     }
@@ -606,6 +647,26 @@ public class QuarryScreen extends HandledScreen<QuarryScreenHandler> {
             lines[i] = trim(lines[i], width);
         }
         return String.join("\n", lines);
+    }
+
+    private String trimMultilinePreservingAnimMarkers(String text, int width) {
+        String[] lines = normalizeNewlines(text).split("\\R", -1);
+        for (int i = 0; i < lines.length; i++) {
+            lines[i] = trimLinePreservingAnimMarker(lines[i], width);
+        }
+        return String.join("\n", lines);
+    }
+
+    private String trimLinePreservingAnimMarker(String line, int width) {
+        java.util.regex.Matcher matcher = TRAILING_STATUS_ANIM_MARKER.matcher(line);
+        if (!matcher.matches()) {
+            return trim(line, width);
+        }
+        String base = matcher.group("base");
+        String marker = matcher.group("marker");
+        String suffix = matcher.group("suffix");
+        String whitespace = matcher.group("ws");
+        return trim(base, width) + marker + suffix + whitespace;
     }
 
     private void drawLeftMultilineString(DrawContext context, String text, int x, int y, int color) {
@@ -621,6 +682,122 @@ public class QuarryScreen extends HandledScreen<QuarryScreenHandler> {
             return "";
         }
         return text.replace("\\n", "\n").replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private String animateStatusEllipsis(String text, long tick) {
+        String normalized = normalizeNewlines(text);
+        if (normalized.isEmpty()) {
+            return normalized;
+        }
+        int dotCount = (int) ((tick / 10L) % 4L);
+        String[] lines = normalized.split("\\R", -1);
+        for (int i = 0; i < lines.length; i++) {
+            lines[i] = animateTrailingStatusMarker(lines[i], dotCount);
+        }
+        return String.join("\n", lines);
+    }
+
+    private String animateTrailingStatusMarker(String line, int dotCount) {
+        java.util.regex.Matcher matcher = TRAILING_STATUS_ANIM_MARKER.matcher(line);
+        if (!matcher.matches()) {
+            return line;
+        }
+        String base = matcher.group("base");
+        String marker = matcher.group("marker");
+        String suffix = matcher.group("suffix");
+        String whitespace = matcher.group("ws");
+        String symbol = "[[anim_sq]]".equalsIgnoreCase(marker) ? "\u25AA" : ".";
+        if ("\u00A7k_".equalsIgnoreCase(marker)) {
+            symbol = "\u25AA";
+        }
+        String dots = symbol.repeat(Math.max(0, dotCount));
+        if (isFormattingOnly(base)) {
+            return dots + suffix + whitespace;
+        }
+        return base + dots + suffix + whitespace;
+    }
+
+    private boolean isFormattingOnly(String text) {
+        String stripped = LEGACY_FORMATTING_CODE.matcher(text).replaceAll("");
+        stripped = TAG_FORMATTING_CODE.matcher(stripped).replaceAll("");
+        return stripped.trim().isEmpty();
+    }
+
+    @Nullable
+    private String extractStatusAnimBase(String line) {
+        java.util.regex.Matcher matcher = TRAILING_STATUS_ANIM_MARKER.matcher(line);
+        if (!matcher.matches()) {
+            return null;
+        }
+        return matcher.group("base");
+    }
+
+    private String animateStatusBracketDots(String text, long tick) {
+        String normalized = normalizeNewlines(text);
+        if (normalized.isEmpty()) {
+            return normalized;
+        }
+        boolean blinkOn = ((tick / 10L) & 1L) == 1L;
+        boolean blinkOnSlow = ((tick / 20L) & 1L) == 1L;
+        String[] lines = normalized.split("\\R", -1);
+        for (int i = 0; i < lines.length; i++) {
+            lines[i] = animateBracketDotsLine(lines[i], blinkOn, blinkOnSlow);
+        }
+        return String.join("\n", lines);
+    }
+
+    private String animateBracketDotsLine(String line, boolean blinkOn, boolean blinkOnSlow) {
+        int firstBar = line.indexOf(HEADER_MARKER_BAR);
+        int firstBarSlow = line.indexOf(HEADER_MARKER_BAR_SLOW);
+        if (firstBar < 0 && firstBarSlow < 0) return line;
+
+        String marker;
+        int firstMarker;
+        if (firstBar >= 0 && (firstBarSlow < 0 || firstBar < firstBarSlow)) {
+            marker = HEADER_MARKER_BAR;
+            firstMarker = firstBar;
+        } else {
+            marker = HEADER_MARKER_BAR_SLOW;
+            firstMarker = firstBarSlow;
+        }
+        int lastMarker = line.lastIndexOf(marker);
+        if (lastMarker <= firstMarker) return line;
+
+        int leftStart = findStyleStart(line, firstMarker);
+        int leftEnd = firstMarker + marker.length();
+        int rightStart = findStyleStart(line, lastMarker);
+        int rightEnd = lastMarker + marker.length();
+        if (rightStart <= leftEnd) return line;
+
+        String leftToken = line.substring(leftStart, leftEnd);
+        String rightToken = line.substring(rightStart, rightEnd);
+        if (!leftToken.endsWith(marker) || !rightToken.endsWith(marker)) return line;
+
+        String prefix = line.substring(0, leftStart);
+        String core = line.substring(leftEnd, rightStart);
+        String suffix = line.substring(rightEnd);
+        String leftStyle = extractStyleCodes(leftToken, marker);
+        String rightStyle = extractStyleCodes(rightToken, marker);
+        boolean blink = HEADER_MARKER_BAR.equals(marker) ? blinkOn : blinkOnSlow;
+        String animatedLeftBars = blink ? leftStyle + "\u275A " + "\u00A7r" : "";
+        String animatedRightBars = blink ? rightStyle + " \u275A" + "\u00A7r" : "";
+        return prefix + animatedLeftBars + core + animatedRightBars + suffix;
+    }
+
+    private int findStyleStart(String line, int markerIndex) {
+        int i = markerIndex;
+        while (i >= 2 && line.charAt(i - 2) == '\u00A7') {
+            i -= 2;
+        }
+        return i;
+    }
+
+    private String extractStyleCodes(String token, String marker) {
+        int markerIndex = token.indexOf(marker);
+        if (markerIndex < 0) {
+            return "";
+        }
+        return token.substring(0, markerIndex);
     }
 
     private void applyMachineSlotVisibility() {

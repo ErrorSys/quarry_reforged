@@ -31,11 +31,7 @@ QuarryReforged implements ModInitializer {
         if (!BlockWrenchEventHandler.wrenchableBlocks.contains(ModBlocks.QUARRY)) {
             BlockWrenchEventHandler.wrenchableBlocks.add(ModBlocks.QUARRY);
         }
-        if (ModConfig.DATA.debug) {
-            ModCommands.register();
-        } else {
-            LOGGER.info("Debug commands disabled by config (set debug=true to enable).");
-        }
+        ModCommands.register();
         LOGGER.info("Quarry Reforged initialized.");
     }
 }

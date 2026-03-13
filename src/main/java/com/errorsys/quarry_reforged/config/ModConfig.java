@@ -58,16 +58,14 @@ public final class ModConfig {
         public int maxQuarrySize = 64;
         public List<String> blacklist = new ArrayList<>();
 
-        public boolean allowDefaultArea = true;
-        public int defaultAreaSize = 9;
-
         public long energyCapacity = 2000000;
         public long maxEnergyInput = 8192;
         public long energyPerFrame = 25;
         public long energyPerBlock = 400;
         public float hardnessEnergyScale = 25.0f;
 
-        public int ticksPerBlock = 20;
+        public double minBlocksPerSecond = 2.0;
+        public double maxBlocksPerSecond = 40.0;
 
         public boolean enableChunkloadingUpgrade = true;
         public int chunkloadingUpgradeRadius = 1;
@@ -82,13 +80,13 @@ public final class ModConfig {
         public void normalize() {
             maxQuarrySize = Math.max(1, maxQuarrySize);
             if (blacklist == null) blacklist = new ArrayList<>();
-            defaultAreaSize = Math.max(1, defaultAreaSize);
             energyCapacity = Math.max(1L, energyCapacity);
             maxEnergyInput = Math.max(0L, maxEnergyInput);
             energyPerFrame = Math.max(0L, energyPerFrame);
             energyPerBlock = Math.max(0L, energyPerBlock);
             hardnessEnergyScale = Math.max(0.0f, hardnessEnergyScale);
-            ticksPerBlock = Math.max(1, ticksPerBlock);
+            minBlocksPerSecond = Math.max(0.01, minBlocksPerSecond);
+            maxBlocksPerSecond = Math.max(minBlocksPerSecond, maxBlocksPerSecond);
             chunkloadingUpgradeRadius = Math.max(0, chunkloadingUpgradeRadius);
             chunkTicketLevel = Math.max(0, chunkTicketLevel);
             rediscoveryScanIntervalTicks = Math.max(1, rediscoveryScanIntervalTicks);

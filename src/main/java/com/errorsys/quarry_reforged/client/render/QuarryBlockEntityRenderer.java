@@ -15,6 +15,7 @@ import com.errorsys.quarry_reforged.content.ModBlocks;
 import com.errorsys.quarry_reforged.content.block.QuarryBlock;
 import com.errorsys.quarry_reforged.content.block.QuarryFrameBlock;
 import com.errorsys.quarry_reforged.content.blockentity.QuarryBlockEntity;
+import com.errorsys.quarry_reforged.util.QuarryAreaRegistry;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.world.ClientWorld;
@@ -84,12 +85,16 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
     private static final double LASER_BEAM_PERSIST_TICKS = 8.0;
     private static final double INTERPOLATION_MIN_DURATION_TICKS = 1.0;
     private static final double INTERPOLATION_MAX_DURATION_TICKS = 4.0;
+    private static final double GANTRY_RENDER_SMOOTH_TICKS = 0.6;
+    private static final double PREVIEW_BEAM_END_EXTEND = 1.0 / 16.0;
+    private static final double PREVIEW_EDGE_OUTSET = 1.0 / 1024.0;
 
     private final Map<InterpolationKey, InterpolationState> interpolationStates = new HashMap<>();
     private final Map<Long, CubeMotionState> cubeMotionStates = new HashMap<>();
     private final Map<Long, Map<Long, FrameThrowGhost>> frameThrowGhosts = new HashMap<>();
     private final Map<Long, BeamHoldState> beamHoldStates = new HashMap<>();
     private final Map<Long, Vec3d> rediscoveryFrozenGantryHeads = new HashMap<>();
+    private final Map<Long, GantryRenderSmoothingState> gantryRenderSmoothingStates = new HashMap<>();
     private final Map<Long, CubePhaseFxState> cubePhaseFxStates = new HashMap<>();
     private final Map<Long, StaticGeometryCache> staticGeometryCaches = new HashMap<>();
     private final QuarryRenderMaterialPolicy materialPolicy = new QuarryRenderMaterialPolicy();
@@ -120,7 +125,12 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
     @Override
     public void render(QuarryBlockEntity be, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, int overlay) {
         QuarryRenderContext context = QuarryRenderContext.from(be);
-        if (!context.areaLocked()) return;
+        if (!context.areaLocked()) {
+            if (be.hasPlacementAreaPreviewClient()) {
+                renderPlacementAreaPreview(be, matrices, vertexConsumers, light);
+            }
+            return;
+        }
         pruneInterpolationStates(be);
         pruneCubeMotionStates(be);
         pruneFrameThrowGhostStates(be);
@@ -130,10 +140,18 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
 
         RenderDecision decision = decideRender(context);
         updateCubePhaseFx(context, decision.phase());
+        if (decision.phase() != RenderPhase.GANTRY) {
+            gantryRenderSmoothingStates.remove(be.getPos().asLong());
+        }
         if (decision.phase() != RenderPhase.LASER_ACTIVE && decision.phase() != RenderPhase.LASER_IDLE) {
             rediscoveryFrozenGantryHeads.remove(be.getPos().asLong());
         }
-        if (!decision.renderAny()) return;
+        if (!decision.renderAny()) {
+            if (be.hasPlacementAreaPreviewClient()) {
+                renderPlacementAreaPreview(be, matrices, vertexConsumers, light);
+            }
+            return;
+        }
         if (decision.clearFrameGhosts()) {
             frameThrowGhosts.remove(be.getPos().asLong());
         }
@@ -142,14 +160,78 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         renderPhase(decision.phase(), context, be, tickDelta, matrices, vertexConsumers, shadedLight, overlay);
     }
 
+    private void renderPlacementAreaPreview(QuarryBlockEntity be,
+                                            MatrixStack matrices,
+                                            VertexConsumerProvider vertexConsumers,
+                                            int light) {
+        QuarryAreaRegistry.AreaBounds bounds = be.getPlacementAreaPreviewBoundsClient();
+        if (bounds == null) return;
+
+        BlockPos origin = be.getPos();
+        int shadedLight = clampShadedLight(light);
+
+        double minX = bounds.minX() - PREVIEW_EDGE_OUTSET;
+        double minY = bounds.minY() - PREVIEW_EDGE_OUTSET;
+        double minZ = bounds.minZ() - PREVIEW_EDGE_OUTSET;
+        double maxX = bounds.maxX() + PREVIEW_EDGE_OUTSET;
+        double maxY = bounds.maxY() + PREVIEW_EDGE_OUTSET;
+        double maxZ = bounds.maxZ() + PREVIEW_EDGE_OUTSET;
+
+        Vec3d p000 = toLocalCenter(origin, minX, minY, minZ);
+        Vec3d p001 = toLocalCenter(origin, minX, minY, maxZ);
+        Vec3d p010 = toLocalCenter(origin, minX, maxY, minZ);
+        Vec3d p011 = toLocalCenter(origin, minX, maxY, maxZ);
+        Vec3d p100 = toLocalCenter(origin, maxX, minY, minZ);
+        Vec3d p101 = toLocalCenter(origin, maxX, minY, maxZ);
+        Vec3d p110 = toLocalCenter(origin, maxX, maxY, minZ);
+        Vec3d p111 = toLocalCenter(origin, maxX, maxY, maxZ);
+
+        renderExpandedBeam(p000, p001, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p001, p101, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p101, p100, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p100, p000, matrices, vertexConsumers, shadedLight);
+
+        renderExpandedBeam(p010, p011, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p011, p111, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p111, p110, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p110, p010, matrices, vertexConsumers, shadedLight);
+
+        renderExpandedBeam(p000, p010, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p001, p011, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p100, p110, matrices, vertexConsumers, shadedLight);
+        renderExpandedBeam(p101, p111, matrices, vertexConsumers, shadedLight);
+    }
+
+    private void renderExpandedBeam(Vec3d from,
+                                    Vec3d to,
+                                    MatrixStack matrices,
+                                    VertexConsumerProvider vertexConsumers,
+                                    int shadedLight) {
+        Vec3d delta = to.subtract(from);
+        double length = delta.length();
+        if (length <= 1.0E-6) return;
+        Vec3d unit = delta.multiply(1.0 / length);
+        Vec3d expandedFrom = from.subtract(unit.multiply(PREVIEW_BEAM_END_EXTEND));
+        Vec3d expandedTo = to.add(unit.multiply(PREVIEW_BEAM_END_EXTEND));
+        beamRenderer.render(expandedFrom, expandedTo, matrices, vertexConsumers, shadedLight);
+    }
+
+    private Vec3d toLocalCenter(BlockPos origin, double x, double y, double z) {
+        return new Vec3d(
+                x + 0.5 - origin.getX(),
+                y + 0.5 - origin.getY(),
+                z + 0.5 - origin.getZ()
+        );
+    }
+
     private RenderDecision decideRender(QuarryRenderContext context) {
         RenderPhase phase = switch (context.renderPhase()) {
             case DEBUG_PREVIEW -> RenderPhase.DEBUG_PREVIEW;
             case RENDER_FRAME_WORK -> RenderPhase.FRAME_WORK;
-            case RENDER_LASER_ACTIVE -> RenderPhase.LASER_ACTIVE;
+            case RENDER_LASER_ACTIVE, RENDER_REMOVE_FRAME -> RenderPhase.LASER_ACTIVE;
             case RENDER_LASER_IDLE -> RenderPhase.LASER_IDLE;
             case RENDER_GANTRY_MINE, RENDER_GANTRY_TRAVEL, RENDER_GANTRY_FREEZE, RENDER_FINISH_HOME -> RenderPhase.GANTRY;
-            case RENDER_REMOVE_FRAME, RENDER_NONE -> RenderPhase.NONE;
+            case RENDER_NONE -> RenderPhase.NONE;
         };
         boolean renderAny = phase != RenderPhase.NONE;
         boolean clearFrameGhosts = phase != RenderPhase.FRAME_WORK;
@@ -209,15 +291,38 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
                                   MatrixStack matrices,
                                   VertexConsumerProvider vertexConsumers,
                                   int shadedLight) {
-        Vec3d headWorld = context.forceHomeGantry()
+        Vec3d rawHeadWorld = context.forceHomeGantry()
                 ? context.toolHeadOriginPos()
                 : getInterpolatedToolHeadPos(context, tickDelta);
+        Vec3d headWorld = smoothGantryHeadRender(context, rawHeadWorld, tickDelta);
         Vec3d headPos = QuarryRenderAnchors.toolHeadLocal(context, headWorld, TOOL_HEAD_Y_OFFSET);
         StaticGeometryCache staticCache = getStaticGeometryCache(context);
         QuarryRenderAnchors.GantrySpan gantrySpan = staticCache.gantrySpan;
         gantryRenderer.render(gantrySpan, headPos, matrices, vertexConsumers, shadedLight);
         pipeRenderer.render(headPos.x, headPos.z, toolHeadRenderer.topY(headPos), gantrySpan.minY(), matrices, vertexConsumers, shadedLight);
         toolHeadRenderer.render(headPos, matrices, vertexConsumers, shadedLight);
+    }
+
+    private Vec3d smoothGantryHeadRender(QuarryRenderContext context, Vec3d rawHeadWorld, float tickDelta) {
+        long key = context.quarryPos().asLong();
+        double nowTick = ((double) context.worldTime()) + (double) clampTickDelta(tickDelta);
+        GantryRenderSmoothingState state = gantryRenderSmoothingStates.get(key);
+        if (state == null) {
+            state = new GantryRenderSmoothingState(rawHeadWorld, nowTick);
+            gantryRenderSmoothingStates.put(key, state);
+            return rawHeadWorld;
+        }
+
+        double elapsedTicks = Math.max(0.0, nowTick - state.lastRenderTick);
+        if (elapsedTicks <= 1.0E-6) {
+            return state.lastHeadWorld;
+        }
+
+        double alpha = 1.0 - Math.exp(-elapsedTicks / GANTRY_RENDER_SMOOTH_TICKS);
+        Vec3d smoothed = state.lastHeadWorld.lerp(rawHeadWorld, MathHelper.clamp(alpha, 0.0, 1.0));
+        state.lastHeadWorld = smoothed;
+        state.lastRenderTick = nowTick;
+        return smoothed;
     }
 
     private void renderDebugPreview(QuarryRenderContext context,
@@ -379,8 +484,11 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         double now = ((double) context.worldTime()) + (double) clampTickDelta(tickDelta);
         Vec3d cubePos = getCubeLocalPos(context, TOP_LASER_CUBE_MODE, tickDelta);
         CubeMotionState motionState = cubeMotionStates.get(key);
-        if (context.rediscoveryDraining() && motionState != null && motionState.rediscoveryVolume != null) {
-            renderRediscoveryVolumeDebug(motionState.rediscoveryVolume, matrices, vertexConsumers);
+        if (context.rediscoveryVolumeDebugRenderEnabled()
+                && context.rediscoveryDraining()
+                && motionState != null
+                && motionState.rediscoveryVolume != null) {
+            renderRediscoveryVolumeDebug(motionState.rediscoveryVolume, motionState.target, matrices, vertexConsumers);
         }
         CubePhaseFxState fx = cubePhaseFxStates.get(key);
         if (fx != null) {
@@ -460,7 +568,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             long elapsedTicks = state.lastCubeMotionUpdateTick == Long.MIN_VALUE
                     ? 1L
                     : Math.max(1L, worldTime - state.lastCubeMotionUpdateTick);
-            double speedRatio = MathHelper.clamp(context.blocksPerSecond() / 40.0, 0.0, 1.0);
+            double speedRatio = MathHelper.clamp(context.blocksPerSecond() / Math.max(1.0, ModConfig.DATA.maxBlocksPerSecond), 0.0, 1.0);
             double wanderBps = MathHelper.lerp(speedRatio, CUBE_MIN_WANDER_BPS, CUBE_MAX_WANDER_BPS);
             double maxMovePerTick = wanderBps / 20.0;
             state.position = moveToward(state.position, state.target, maxMovePerTick * elapsedTicks);
@@ -527,7 +635,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         }
 
         if (state.rediscoveryTravelActive) {
-            double speedRatio = MathHelper.clamp(context.blocksPerSecond() / 40.0, 0.0, 1.0);
+            double speedRatio = MathHelper.clamp(context.blocksPerSecond() / Math.max(1.0, ModConfig.DATA.maxBlocksPerSecond), 0.0, 1.0);
             double travelBps = MathHelper.lerp(speedRatio, CUBE_MIN_WANDER_BPS, CUBE_MAX_WANDER_BPS);
             double maxMove = (travelBps * 1.5) / 20.0;
             state.position = moveToward(state.position, desiredPos, maxMove * elapsedTicks);
@@ -548,7 +656,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
             state.target = sampleRediscoveryVolumeTarget(context, volume, state.waypointIndex++);
             state.lastWaypointTick = worldTime;
         }
-        double speedRatio = MathHelper.clamp(context.blocksPerSecond() / 40.0, 0.0, 1.0);
+        double speedRatio = MathHelper.clamp(context.blocksPerSecond() / Math.max(1.0, ModConfig.DATA.maxBlocksPerSecond), 0.0, 1.0);
         double wanderBps = MathHelper.lerp(speedRatio, CUBE_MIN_WANDER_BPS, CUBE_MAX_WANDER_BPS);
         state.position = moveToward(state.position, state.target, (wanderBps / 20.0) * elapsedTicks);
     }
@@ -610,6 +718,7 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
     }
 
     private void renderRediscoveryVolumeDebug(RediscoveryCubeVolume volume,
+                                              @Nullable Vec3d target,
                                               MatrixStack matrices,
                                               VertexConsumerProvider vertexConsumers) {
         VertexConsumer consumer = vertexConsumers.getBuffer(RenderLayer.getLines());
@@ -640,6 +749,12 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         addDebugLine(consumer, position, normal, volume.origin.x - dot, volume.origin.y, volume.origin.z, volume.origin.x + dot, volume.origin.y, volume.origin.z, 1.0f, 0.0f, 0.0f, 1.0f);
         addDebugLine(consumer, position, normal, volume.origin.x, volume.origin.y - dot, volume.origin.z, volume.origin.x, volume.origin.y + dot, volume.origin.z, 1.0f, 0.0f, 0.0f, 1.0f);
         addDebugLine(consumer, position, normal, volume.origin.x, volume.origin.y, volume.origin.z - dot, volume.origin.x, volume.origin.y, volume.origin.z + dot, 1.0f, 0.0f, 0.0f, 1.0f);
+        if (target != null) {
+            double targetDot = 0.11;
+            addDebugLine(consumer, position, normal, target.x - targetDot, target.y, target.z, target.x + targetDot, target.y, target.z, 1.0f, 0.95f, 0.25f, 1.0f);
+            addDebugLine(consumer, position, normal, target.x, target.y - targetDot, target.z, target.x, target.y + targetDot, target.z, 1.0f, 0.95f, 0.25f, 1.0f);
+            addDebugLine(consumer, position, normal, target.x, target.y, target.z - targetDot, target.x, target.y, target.z + targetDot, 1.0f, 0.95f, 0.25f, 1.0f);
+        }
     }
 
     private void addDebugLine(VertexConsumer consumer,
@@ -958,6 +1073,9 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         if (rediscoveryFrozenGantryHeads.size() >= 32) {
             rediscoveryFrozenGantryHeads.keySet().removeIf(key -> key != activeKey);
         }
+        if (gantryRenderSmoothingStates.size() >= 32) {
+            gantryRenderSmoothingStates.keySet().removeIf(key -> key != activeKey);
+        }
         if (cubePhaseFxStates.size() >= 32) {
             cubePhaseFxStates.keySet().removeIf(key -> key != activeKey);
         }
@@ -1131,6 +1249,16 @@ public class QuarryBlockEntityRenderer implements BlockEntityRenderer<QuarryBloc
         private double primaryExpireAtTick = Double.NEGATIVE_INFINITY;
         private Vec3d trailingTargetLocal;
         private double trailingExpireAtTick = Double.NEGATIVE_INFINITY;
+    }
+
+    private static final class GantryRenderSmoothingState {
+        private Vec3d lastHeadWorld;
+        private double lastRenderTick;
+
+        private GantryRenderSmoothingState(Vec3d lastHeadWorld, double lastRenderTick) {
+            this.lastHeadWorld = lastHeadWorld;
+            this.lastRenderTick = lastRenderTick;
+        }
     }
 
     private record StaticGeometryCache(int frameTopY, int innerMinX, int innerMaxX, int innerMinY, int innerMaxY,
